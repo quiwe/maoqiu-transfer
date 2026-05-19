@@ -20,6 +20,9 @@ jobs:
           channel: stable
           cache: true
 
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
       - name: Generate Android platform files
         run: flutter create . --platforms=android
 
@@ -27,7 +30,7 @@ jobs:
         run: ./tool/patch_android_platform.sh
 
       - name: Install Android API 36
-        run: yes | sdkmanager "platforms;android-36"
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36"
 
       - name: Install dependencies
         run: flutter pub get
