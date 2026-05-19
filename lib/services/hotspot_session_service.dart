@@ -76,9 +76,14 @@ class HotspotSessionService {
   }
 
   Future<void> _ensureAndroidHotspotPermissions() async {
+    final nearbyStatus = await Permission.nearbyWifiDevices.request();
+    if (nearbyStatus.isGranted) {
+      return;
+    }
+
     final locationStatus = await Permission.locationWhenInUse.request();
-    if (!locationStatus.isGranted) {
-      throw StateError('Android 创建临时热点需要允许附近设备 / 位置信息权限。');
+    if (!locationStatus.isGranted && !nearbyStatus.isGranted) {
+      throw StateError('Android 创建临时热点需要允许附近设备或位置信息权限。');
     }
   }
 
@@ -129,5 +134,23 @@ class HotspotPlatformService {
 
   Future<void> stopLocalOnlyHotspot() async {
     await _channel.invokeMethod<void>('stopLocalOnlyHotspot');
+  }
+
+  Future<bool> connectToWifi({
+    required String ssid,
+    required String password,
+  }) async {
+    final connected = await _channel.invokeMethod<bool>(
+      'connectToWifi',
+      {
+        'ssid': ssid,
+        'password': password,
+      },
+    );
+    return connected ?? false;
+  }
+
+  Future<void> releaseWifiNetwork() async {
+    await _channel.invokeMethod<void>('releaseWifiNetwork');
   }
 }

@@ -1,4 +1,8 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 import '../app.dart';
 import '../models/connection_invite.dart';
@@ -12,13 +16,20 @@ class JoinTransferPage extends StatefulWidget {
 
 class _JoinTransferPageState extends State<JoinTransferPage> {
   final _payloadController = TextEditingController();
+  final MobileScannerController _scannerController = MobileScannerController(
+    detectionSpeed: DetectionSpeed.noDuplicates,
+  );
   HotspotInvite? _invite;
   String? _error;
   bool _joining = false;
+  bool _scanning = false;
+  bool _handledScan = false;
+  bool get _supportsCameraScan => Platform.isAndroid;
 
   @override
   void dispose() {
     _payloadController.dispose();
+    _scannerController.dispose();
     super.dispose();
   }
 
@@ -29,6 +40,24 @@ class _JoinTransferPageState extends State<JoinTransferPage> {
       body: ListView(
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
         children: [
+          if (_supportsCameraScan && _scanning) ...[
+            _ScannerPanel(
+              controller: _scannerController,
+              onDetect: _handleScan,
+              onClose: () {
+                _stopScanner();
+              },
+            ),
+            const SizedBox(height: 14),
+          ],
+          if (_supportsCameraScan) ...[
+            FilledButton.icon(
+              icon: const Icon(Icons.photo_camera_outlined),
+              label: Text(_scanning ? '正在扫描' : '打开相机扫码'),
+              onPressed: _scanning ? null : _startScanner,
+            ),
+            const SizedBox(height: 14),
+          ],
           TextField(
             controller: _payloadController,
             minLines: 4,
@@ -58,13 +87,58 @@ class _JoinTransferPageState extends State<JoinTransferPage> {
             const SizedBox(height: 16),
             FilledButton.icon(
               icon: const Icon(Icons.wifi),
-              label: Text(_joining ? '正在通知发送端' : '我已加入，继续'),
+              label: Text(_joining ? '正在连接并通知发送端' : '连接热点并继续'),
               onPressed: _joining ? null : _join,
             ),
           ],
         ],
       ),
     );
+  }
+
+  Future<void> _startScanner() async {
+    final status = await Permission.camera.request();
+    if (!status.isGranted) {
+      setState(() => _error = '需要相机权限才能扫码。');
+      return;
+    }
+
+    setState(() {
+      _error = null;
+      _handledScan = false;
+      _scanning = true;
+    });
+    await _scannerController.start();
+  }
+
+  Future<void> _stopScanner() async {
+    await _scannerController.stop();
+    if (mounted) {
+      setState(() => _scanning = false);
+    }
+  }
+
+  Future<void> _handleScan(BarcodeCapture capture) async {
+    if (_handledScan) {
+      return;
+    }
+
+    String? rawValue;
+    for (final barcode in capture.barcodes) {
+      final value = barcode.rawValue;
+      if (value != null && value.trim().isNotEmpty) {
+        rawValue = value;
+        break;
+      }
+    }
+    if (rawValue == null || rawValue.trim().isEmpty) {
+      return;
+    }
+
+    _handledScan = true;
+    _payloadController.text = rawValue;
+    _parsePayload();
+    await _stopScanner();
   }
 
   void _parsePayload() {
@@ -107,6 +181,55 @@ class _JoinTransferPageState extends State<JoinTransferPage> {
         _error = error.toString();
       });
     }
+  }
+}
+
+class _ScannerPanel extends StatelessWidget {
+  const _ScannerPanel({
+    required this.controller,
+    required this.onDetect,
+    required this.onClose,
+  });
+
+  final MobileScannerController controller;
+  final void Function(BarcodeCapture capture) onDetect;
+  final VoidCallback onClose;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(8),
+      child: AspectRatio(
+        aspectRatio: 1,
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            MobileScanner(
+              controller: controller,
+              onDetect: onDetect,
+            ),
+            DecoratedBox(
+              decoration: BoxDecoration(
+                border: Border.all(
+                  color: theme.colorScheme.primary,
+                  width: 3,
+                ),
+              ),
+            ),
+            Positioned(
+              right: 8,
+              top: 8,
+              child: IconButton.filledTonal(
+                tooltip: '关闭扫码',
+                icon: const Icon(Icons.close),
+                onPressed: onClose,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 

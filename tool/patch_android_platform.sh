@@ -18,6 +18,10 @@ if ! grep -q "CHANGE_WIFI_MULTICAST_STATE" "$manifest"; then
   perl -0pi -e 's#<manifest([^>]*)>#<manifest$1>\n    <uses-permission android:name="android.permission.INTERNET" />\n    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />\n    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />\n    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />\n    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />\n    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />\n    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES" android:usesPermissionFlags="neverForLocation" />#' "$manifest"
 fi
 
+if ! grep -q "android.permission.CAMERA" "$manifest"; then
+  perl -0pi -e 's#<manifest([^>]*)>#<manifest$1>\n    <uses-permission android:name="android.permission.CAMERA" />\n    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />#' "$manifest"
+fi
+
 perl -0pi -e 's/android:label="[^"]*"/android:label="毛球互传"/' "$manifest"
 
 for gradle_file in android/app/build.gradle android/app/build.gradle.kts; do
@@ -35,28 +39,44 @@ cat > "$activity" <<KOTLIN
 $package_line
 
 import android.net.wifi.WifiManager
+import android.net.wifi.SoftApConfiguration
+import android.net.wifi.WifiNetworkSpecifier
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.os.Build
-import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
+import java.net.InetAddress
 import java.net.NetworkInterface
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import java.util.concurrent.atomic.AtomicBoolean
 
 class MainActivity : FlutterActivity() {
     private var hotspotReservation: WifiManager.LocalOnlyHotspotReservation? = null
+    private var wifiNetworkCallback: ConnectivityManager.NetworkCallback? = null
     private val channelName = "maoqiu_transfer/hotspot"
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
             .setMethodCallHandler { call: MethodCall, result: MethodChannel.Result ->
                 when (call.method) {
-                    "startLocalOnlyHotspot" -> startLocalOnlyHotspot(result)
+                    "startLocalOnlyHotspot" -> startLocalOnlyHotspot(call, result)
                     "stopLocalOnlyHotspot" -> {
                         stopLocalOnlyHotspot()
+                        result.success(null)
+                    }
+                    "connectToWifi" -> connectToWifi(call, result)
+                    "releaseWifiNetwork" -> {
+                        releaseWifiNetwork()
                         result.success(null)
                     }
                     else -> result.notImplemented()
@@ -65,11 +85,12 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onDestroy() {
+        releaseWifiNetwork()
         stopLocalOnlyHotspot()
         super.onDestroy()
     }
 
-    private fun startLocalOnlyHotspot(result: MethodChannel.Result) {
+    private fun startLocalOnlyHotspot(call: MethodCall, result: MethodChannel.Result) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
             result.error("unsupported_android_version", "LocalOnlyHotspot requires Android 8.0 or newer.", null)
             return
@@ -79,36 +100,157 @@ class MainActivity : FlutterActivity() {
         hotspotReservation?.close()
         hotspotReservation = null
 
-        wifiManager.startLocalOnlyHotspot(
-            object : WifiManager.LocalOnlyHotspotCallback() {
-                override fun onStarted(reservation: WifiManager.LocalOnlyHotspotReservation) {
-                    hotspotReservation = reservation
-                    val configuration = reservation.wifiConfiguration
-                    result.success(
-                        mapOf(
-                            "ssid" to (configuration?.SSID?.trim('"') ?: ""),
-                            "password" to (configuration?.preSharedKey?.trim('"') ?: ""),
-                            "hostIp" to findLocalIpv4()
-                        )
+        val callback = object : WifiManager.LocalOnlyHotspotCallback() {
+            override fun onStarted(reservation: WifiManager.LocalOnlyHotspotReservation) {
+                hotspotReservation = reservation
+                val credentials = hotspotCredentials(reservation)
+                result.success(
+                    mapOf(
+                        "ssid" to credentials.first,
+                        "password" to credentials.second,
+                        "hostIp" to findHotspotHostIp(wifiManager)
                     )
-                }
+                )
+            }
 
-                override fun onStopped() {
-                    hotspotReservation = null
-                }
+            override fun onStopped() {
+                hotspotReservation = null
+            }
 
-                override fun onFailed(reason: Int) {
-                    hotspotReservation = null
-                    result.error("local_only_hotspot_failed", "LocalOnlyHotspot failed with reason: \$reason", reason)
-                }
-            },
-            Handler(Looper.getMainLooper())
-        )
+            override fun onFailed(reason: Int) {
+                hotspotReservation = null
+                result.error("local_only_hotspot_failed", "LocalOnlyHotspot failed with reason: \$reason", reason)
+            }
+        }
+
+        val ssid = call.argument<String>("suggestedSsid") ?: ""
+        val password = call.argument<String>("suggestedPassword") ?: ""
+
+        if (Build.VERSION.SDK_INT >= 36 && ssid.isNotBlank() && password.length >= 8) {
+            val config = SoftApConfiguration.Builder()
+                .setSsid(ssid)
+                .setPassphrase(password, SoftApConfiguration.SECURITY_TYPE_WPA2_PSK)
+                .build()
+            wifiManager.startLocalOnlyHotspotWithConfiguration(config, mainExecutor, callback)
+        } else {
+            @Suppress("DEPRECATION")
+            wifiManager.startLocalOnlyHotspot(callback, mainHandler)
+        }
     }
 
     private fun stopLocalOnlyHotspot() {
         hotspotReservation?.close()
         hotspotReservation = null
+    }
+
+    private fun connectToWifi(call: MethodCall, result: MethodChannel.Result) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            result.error("unsupported_android_version", "Automatic Wi-Fi join requires Android 10 or newer.", null)
+            return
+        }
+
+        val ssid = call.argument<String>("ssid") ?: ""
+        val password = call.argument<String>("password") ?: ""
+        if (ssid.isBlank()) {
+            result.error("invalid_ssid", "SSID is empty.", null)
+            return
+        }
+
+        val connectivityManager = applicationContext.getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
+        releaseWifiNetwork()
+
+        val specifierBuilder = WifiNetworkSpecifier.Builder().setSsid(ssid)
+        if (password.isNotBlank()) {
+            specifierBuilder.setWpa2Passphrase(password)
+        }
+
+        val request = NetworkRequest.Builder()
+            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+            .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .setNetworkSpecifier(specifierBuilder.build())
+            .build()
+
+        val completed = AtomicBoolean(false)
+        val timeout = Runnable {
+            if (completed.compareAndSet(false, true)) {
+                releaseWifiNetwork()
+                result.error("wifi_connection_timeout", "Timed out waiting for Wi-Fi connection.", null)
+            }
+        }
+
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                if (completed.compareAndSet(false, true)) {
+                    mainHandler.removeCallbacks(timeout)
+                    wifiNetworkCallback = this
+                    connectivityManager.bindProcessToNetwork(network)
+                    result.success(true)
+                }
+            }
+
+            override fun onUnavailable() {
+                if (completed.compareAndSet(false, true)) {
+                    mainHandler.removeCallbacks(timeout)
+                    releaseWifiNetwork()
+                    result.error("wifi_unavailable", "The requested Wi-Fi network was unavailable or rejected.", null)
+                }
+            }
+
+            override fun onLost(network: Network) {
+                releaseWifiNetwork()
+            }
+        }
+
+        wifiNetworkCallback = callback
+        connectivityManager.requestNetwork(request, callback)
+        mainHandler.postDelayed(timeout, 60000)
+    }
+
+    private fun releaseWifiNetwork() {
+        val connectivityManager = applicationContext.getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
+        wifiNetworkCallback?.let {
+            try {
+                connectivityManager.unregisterNetworkCallback(it)
+            } catch (_: Exception) {
+            }
+        }
+        wifiNetworkCallback = null
+        connectivityManager.bindProcessToNetwork(null)
+    }
+
+    private fun hotspotCredentials(reservation: WifiManager.LocalOnlyHotspotReservation): Pair<String, String> {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val softApConfig = reservation.softApConfiguration
+            val ssid = softApConfig.ssid ?: ""
+            val password = softApConfig.passphrase ?: ""
+            if (ssid.isNotBlank()) {
+                return Pair(ssid, password)
+            }
+        }
+
+        @Suppress("DEPRECATION")
+        val configuration = reservation.wifiConfiguration
+        return Pair(
+            configuration?.SSID?.trim('"') ?: "",
+            configuration?.preSharedKey?.trim('"') ?: ""
+        )
+    }
+
+    private fun findHotspotHostIp(wifiManager: WifiManager): String {
+        @Suppress("DEPRECATION")
+        val gateway = wifiManager.dhcpInfo?.gateway ?: 0
+        if (gateway != 0) {
+            return intToIpv4(gateway)
+        }
+        return findLocalIpv4()
+    }
+
+    private fun intToIpv4(value: Int): String {
+        val bytes = ByteBuffer.allocate(4)
+            .order(ByteOrder.LITTLE_ENDIAN)
+            .putInt(value)
+            .array()
+        return InetAddress.getByAddress(bytes).hostAddress ?: "192.168.43.1"
     }
 
     private fun findLocalIpv4(): String {

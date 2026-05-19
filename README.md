@@ -31,6 +31,8 @@ Android 端生成平台目录后，需要确认 `android/app/src/main/AndroidMan
 <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
 <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
 <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES" android:usesPermissionFlags="neverForLocation" />
+<uses-permission android:name="android.permission.CAMERA" />
+<uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
 ```
 
 仓库里的 `tool/patch_android_platform.sh` 会在生成 Android 平台目录后自动补齐这些权限、APK 应用名和 `LocalOnlyHotspot` 原生通道。GitHub Actions 在线打包也会执行这个脚本。
@@ -61,18 +63,20 @@ Android 端生成平台目录后，需要确认 `android/app/src/main/AndroidMan
 }
 ```
 
-接收端点击“扫码接收”，加入二维码中的 WiFi 后通知发送端。发送端校验 token 成功后，使用现有 TCP 传输协议向接收端发起传输请求，接收端仍需手动确认。当前源码先支持粘贴二维码 JSON 内容，摄像头扫码可以在平台目录生成后接入 `mobile_scanner` 或系统扫码能力。
+接收端点击“扫码接收”，可以调用相机扫描二维码。Android 端会通过系统 Wi-Fi 连接请求尝试加入二维码中的热点；系统可能弹出确认窗口。加入后接收端通知发送端，发送端校验 token 成功后，使用现有 TCP 传输协议向接收端发起传输请求，接收端仍需手动确认。
 
-当前仓库已经实现 Dart 侧邀请、token 校验、二维码显示和热点加入握手。Android `LocalOnlyHotspot` 通过平台通道接入：
+当前仓库已经实现 Dart 侧邀请、token 校验、二维码显示、相机扫码、系统 Wi-Fi 加入请求和热点加入握手。Android `LocalOnlyHotspot` 通过平台通道接入：
 
 ```text
 MethodChannel: maoqiu_transfer/hotspot
 startLocalOnlyHotspot({ suggestedSsid, suggestedPassword })
   -> { ssid, password, hostIp }
 stopLocalOnlyHotspot()
+connectToWifi({ ssid, password })
+releaseWifiNetwork()
 ```
 
-在原生通道接入前，一键快传会退化为“生成邀请二维码 + 用户手动加入对应 WiFi / 同一网络后继续”。
+Android 36+ 会尝试使用自定义 SSID / 密码创建本地热点；较旧系统会使用系统分配的热点名称和密码，并写入二维码。
 
 ## 在线 APK 打包
 
