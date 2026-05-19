@@ -27,9 +27,9 @@ set_entitlement() {
   local key="$2"
 
   if plutil -extract "$key" raw "$file" >/dev/null 2>&1; then
-    plutil -replace "$key" -bool true "$file"
+    plutil -replace "$key" -bool YES "$file"
   else
-    plutil -insert "$key" -bool true "$file"
+    plutil -insert "$key" -bool YES "$file"
   fi
 }
 
