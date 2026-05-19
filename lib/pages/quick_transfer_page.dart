@@ -6,6 +6,7 @@ import '../app.dart';
 import '../models/connection_invite.dart';
 import '../models/transfer_file.dart';
 import '../models/transfer_task.dart';
+import '../services/app_controller.dart';
 import '../utils/formatters.dart';
 import '../widgets/transfer_progress_card.dart';
 
