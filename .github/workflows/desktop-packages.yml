@@ -1,0 +1,129 @@
+name: Desktop Packages
+
+on:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    name: Windows Installer EXE
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Enable Windows desktop
+        run: flutter config --enable-windows-desktop
+
+      - name: Generate Windows platform files
+        run: flutter create . --platforms=windows
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Analyze
+        run: flutter analyze
+
+      - name: Build Windows release
+        run: flutter build windows --release
+
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          $releaseDir = "build\windows\x64\runner\Release"
+          $exe = Get-ChildItem $releaseDir -Filter "*.exe" | Select-Object -First 1
+          if (-not $exe) { throw "Windows executable not found in $releaseDir" }
+          $iss = @"
+          [Setup]
+          AppId={{B9F62029-1D88-4B0C-99C7-0B9B7206C00C}
+          AppName=毛球互传
+          AppVersion=0.1.0
+          AppPublisher=MaoQiu
+          DefaultDirName={autopf}\MaoQiuTransfer
+          DefaultGroupName=毛球互传
+          OutputDir=dist
+          OutputBaseFilename=maoqiu-transfer-v0.1.0-windows-setup
+          Compression=lzma
+          SolidCompression=yes
+          WizardStyle=modern
+          ArchitecturesInstallIn64BitMode=x64
+
+          [Files]
+          Source: "$releaseDir\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+          [Icons]
+          Name: "{group}\毛球互传"; Filename: "{app}\$($exe.Name)"
+          Name: "{commondesktop}\毛球互传"; Filename: "{app}\$($exe.Name)"; Tasks: desktopicon
+
+          [Tasks]
+          Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加图标："; Flags: unchecked
+
+          [Run]
+          Filename: "{app}\$($exe.Name)"; Description: "启动毛球互传"; Flags: nowait postinstall skipifsilent
+          "@
+          Set-Content -Path installer.iss -Value $iss -Encoding UTF8
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
+
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: maoqiu-transfer-v0.1.0-windows-exe
+          path: dist/maoqiu-transfer-v0.1.0-windows-setup.exe
+
+  macos:
+    name: macOS DMG
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Enable macOS desktop
+        run: flutter config --enable-macos-desktop
+
+      - name: Generate macOS platform files
+        run: flutter create . --platforms=macos
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Analyze
+        run: flutter analyze
+
+      - name: Build macOS release
+        run: flutter build macos --release
+
+      - name: Build DMG
+        run: |
+          mkdir -p dist
+          app_path="$(find build/macos/Build/Products/Release -maxdepth 1 -name '*.app' | head -n 1)"
+          if [ -z "$app_path" ]; then
+            echo "macOS app bundle not found" >&2
+            exit 1
+          fi
+          hdiutil create \
+            -volname "MaoQiu Transfer" \
+            -srcfolder "$app_path" \
+            -ov \
+            -format UDZO \
+            "dist/maoqiu-transfer-v0.1.0-macos.dmg"
+
+      - name: Upload macOS DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: maoqiu-transfer-v0.1.0-macos-dmg
+          path: dist/maoqiu-transfer-v0.1.0-macos.dmg
