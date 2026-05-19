@@ -20,6 +20,12 @@ fi
 
 perl -0pi -e 's/android:label="[^"]*"/android:label="毛球互传"/' "$manifest"
 
+for gradle_file in android/app/build.gradle android/app/build.gradle.kts; do
+  if [[ -f "$gradle_file" ]]; then
+    perl -0pi -e 's/compileSdk\s*=\s*flutter\.compileSdkVersion/compileSdk = 36/g; s/compileSdkVersion\s+flutter\.compileSdkVersion/compileSdkVersion 36/g; s/targetSdk\s*=\s*flutter\.targetSdkVersion/targetSdk = 35/g; s/targetSdkVersion\s+flutter\.targetSdkVersion/targetSdkVersion 35/g' "$gradle_file"
+  fi
+done
+
 package_line="$(grep -E '^package ' "$activity" | head -n 1 || true)"
 if [[ -z "$package_line" ]]; then
   package_line="package com.example.maoqiu_transfer"

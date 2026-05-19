@@ -26,8 +26,14 @@ jobs:
       - name: Patch Android APK platform
         run: ./tool/patch_android_platform.sh
 
+      - name: Install Android API 36
+        run: yes | sdkmanager "platforms;android-36"
+
       - name: Install dependencies
         run: flutter pub get
+
+      - name: Patch Android plugin compile SDK
+        run: ./tool/patch_android_pub_cache.sh
 
       - name: Analyze
         run: flutter analyze
