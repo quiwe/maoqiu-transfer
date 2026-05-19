@@ -2,7 +2,10 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
 import '../app.dart';
+import '../models/app_update.dart';
 import '../models/transfer_task.dart';
+import '../services/app_controller.dart';
+import '../services/app_info.dart';
 import '../utils/formatters.dart';
 
 class SettingsPage extends StatelessWidget {
@@ -42,6 +45,8 @@ class SettingsPage extends StatelessWidget {
                   ),
                 ),
               ),
+              const SizedBox(height: 22),
+              _UpdateSection(controller: controller),
               const SizedBox(height: 22),
               Row(
                 children: [
@@ -84,6 +89,149 @@ class SettingsPage extends StatelessWidget {
       return;
     }
     await controller.setSaveDirectory(path);
+  }
+}
+
+class _UpdateSection extends StatelessWidget {
+  const _UpdateSection({required this.controller});
+
+  final AppController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final update = controller.availableUpdate;
+    final download = controller.updateDownloadState;
+    final isBusy = controller.isCheckingUpdate || download.isDownloading;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('软件更新', style: theme.textTheme.titleMedium),
+        const SizedBox(height: 8),
+        DecoratedBox(
+          decoration: BoxDecoration(
+            border: Border.all(color: theme.colorScheme.outlineVariant),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.all(14),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Icon(
+                      Icons.system_update_alt,
+                      color: theme.colorScheme.primary,
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '当前版本 ${AppInfo.version} · ${AppInfo.platformLabel}',
+                            style: theme.textTheme.titleSmall,
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            controller.updateMessage ??
+                                '从 GitHub Releases 检查对应平台安装包。',
+                            style: theme.textTheme.bodyMedium?.copyWith(
+                              color: theme.colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                if (update != null) ...[
+                  const SizedBox(height: 12),
+                  _UpdateLine(label: '最新版本', value: update.version),
+                  _UpdateLine(label: '安装包', value: update.assetName),
+                  _UpdateLine(label: '大小', value: formatBytes(update.size)),
+                ],
+                if (download.status != UpdateDownloadStatus.idle) ...[
+                  const SizedBox(height: 12),
+                  LinearProgressIndicator(value: download.progress),
+                  const SizedBox(height: 8),
+                  Text(
+                    _downloadText(download),
+                    style: theme.textTheme.bodySmall,
+                  ),
+                  if (download.filePath != null) ...[
+                    const SizedBox(height: 6),
+                    SelectableText(download.filePath!),
+                  ],
+                ],
+                const SizedBox(height: 12),
+                Wrap(
+                  spacing: 10,
+                  runSpacing: 10,
+                  children: [
+                    OutlinedButton.icon(
+                      icon: const Icon(Icons.refresh),
+                      label: Text(
+                        controller.isCheckingUpdate ? '检查中' : '检查更新',
+                      ),
+                      onPressed: isBusy ? null : controller.checkForUpdates,
+                    ),
+                    FilledButton.icon(
+                      icon: const Icon(Icons.download),
+                      label: Text(download.isDownloading ? '下载中' : '下载新版'),
+                      onPressed: update == null || isBusy
+                          ? null
+                          : controller.downloadAvailableUpdate,
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  String _downloadText(UpdateDownloadState state) {
+    switch (state.status) {
+      case UpdateDownloadStatus.idle:
+        return '';
+      case UpdateDownloadStatus.downloading:
+        final total = state.totalBytes > 0 ? formatBytes(state.totalBytes) : '--';
+        final percent = state.progress == null
+            ? ''
+            : ' · ${(state.progress! * 100).toStringAsFixed(0)}%';
+        return '${formatBytes(state.receivedBytes)} / $total$percent';
+      case UpdateDownloadStatus.downloaded:
+        return '下载完成：${formatBytes(state.receivedBytes)}';
+      case UpdateDownloadStatus.failed:
+        return state.errorMessage ?? '下载失败';
+    }
+  }
+}
+
+class _UpdateLine extends StatelessWidget {
+  const _UpdateLine({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(width: 72, child: Text(label)),
+          Expanded(child: SelectableText(value)),
+        ],
+      ),
+    );
   }
 }
 

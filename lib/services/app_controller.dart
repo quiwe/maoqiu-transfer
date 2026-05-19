@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
+import '../models/app_update.dart';
 import '../models/connection_invite.dart';
 import '../models/device_info.dart';
 import '../models/transfer_file.dart';
@@ -10,6 +11,7 @@ import 'device_id_service.dart';
 import 'file_sender_service.dart';
 import 'hash_service.dart';
 import 'hotspot_join_service.dart';
+import 'github_update_service.dart';
 import 'hotspot_session_service.dart';
 import 'history_service.dart';
 import 'network_info_service.dart';
@@ -37,6 +39,7 @@ class AppController extends ChangeNotifier {
   final UdpDiscoveryService _udpDiscoveryService = UdpDiscoveryService();
   final HotspotSessionService _hotspotSessionService = HotspotSessionService();
   final HotspotJoinService _hotspotJoinService = HotspotJoinService();
+  final GitHubUpdateService _updateService = GitHubUpdateService();
   late final TcpServerService _tcpServerService;
   late final FileSenderService _fileSenderService;
   final List<StreamSubscription<dynamic>> _subscriptions = [];
@@ -48,6 +51,10 @@ class AppController extends ChangeNotifier {
   String? hotspotMessage;
   List<DeviceInfo> nearbyDevices = [];
   String? startupError;
+  AppUpdateInfo? availableUpdate;
+  UpdateDownloadState updateDownloadState = const UpdateDownloadState.idle();
+  String? updateMessage;
+  bool isCheckingUpdate = false;
   bool isStarted = false;
 
   SettingsService get settings => _settingsService;
@@ -102,6 +109,7 @@ class AppController extends ChangeNotifier {
       isStarted = true;
       startupError = null;
       notifyListeners();
+      unawaited(checkForUpdates(silent: true));
     } catch (error) {
       startupError = error.toString();
       notifyListeners();
@@ -187,6 +195,68 @@ class AppController extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> checkForUpdates({bool silent = false}) async {
+    if (isCheckingUpdate) {
+      return;
+    }
+
+    isCheckingUpdate = true;
+    if (!silent) {
+      updateMessage = '正在检查更新...';
+      updateDownloadState = const UpdateDownloadState.idle();
+      notifyListeners();
+    }
+
+    try {
+      final update = await _updateService.checkForUpdate();
+      availableUpdate = update;
+      if (update == null) {
+        if (!silent) {
+          updateMessage = '当前已是最新版本。';
+        }
+      } else {
+        updateMessage = '发现新版本 ${update.version}。';
+      }
+    } catch (error) {
+      if (!silent) {
+        updateMessage = error.toString();
+      }
+    } finally {
+      isCheckingUpdate = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> downloadAvailableUpdate() async {
+    var update = availableUpdate;
+    if (update == null) {
+      await checkForUpdates();
+      update = availableUpdate;
+    }
+    if (update == null || updateDownloadState.isDownloading) {
+      return;
+    }
+
+    await for (final state in _updateService.downloadUpdate(update)) {
+      updateDownloadState = state;
+      switch (state.status) {
+        case UpdateDownloadStatus.idle:
+          updateMessage = null;
+          break;
+        case UpdateDownloadStatus.downloading:
+          updateMessage = '正在下载 ${update.assetName}...';
+          break;
+        case UpdateDownloadStatus.downloaded:
+          updateMessage = '下载完成。';
+          break;
+        case UpdateDownloadStatus.failed:
+          updateMessage = state.errorMessage ?? '下载失败。';
+          break;
+      }
+      notifyListeners();
+    }
+  }
+
   void _upsertTask(TransferTask task) {
     _tasks[task.taskId] = task;
     if (task.taskId == activeHotspotTaskId && _isTerminal(task.status)) {
@@ -230,6 +300,7 @@ class AppController extends ChangeNotifier {
     unawaited(_tcpServerService.dispose());
     unawaited(_fileSenderService.dispose());
     unawaited(_hotspotSessionService.stopSession(activeHotspotSession));
+    _updateService.dispose();
     super.dispose();
   }
 }

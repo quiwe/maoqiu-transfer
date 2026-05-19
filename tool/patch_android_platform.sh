@@ -39,7 +39,6 @@ cat > "$activity" <<KOTLIN
 $package_line
 
 import android.net.wifi.WifiManager
-import android.net.wifi.SoftApConfiguration
 import android.net.wifi.WifiNetworkSpecifier
 import android.net.ConnectivityManager
 import android.net.Network
@@ -123,19 +122,8 @@ class MainActivity : FlutterActivity() {
             }
         }
 
-        val ssid = call.argument<String>("suggestedSsid") ?: ""
-        val password = call.argument<String>("suggestedPassword") ?: ""
-
-        if (Build.VERSION.SDK_INT >= 36 && ssid.isNotBlank() && password.length >= 8) {
-            val config = SoftApConfiguration.Builder()
-                .setSsid(ssid)
-                .setPassphrase(password, SoftApConfiguration.SECURITY_TYPE_WPA2_PSK)
-                .build()
-            wifiManager.startLocalOnlyHotspotWithConfiguration(config, mainExecutor, callback)
-        } else {
-            @Suppress("DEPRECATION")
-            wifiManager.startLocalOnlyHotspot(callback, mainHandler)
-        }
+        @Suppress("DEPRECATION")
+        wifiManager.startLocalOnlyHotspot(callback, mainHandler)
     }
 
     private fun stopLocalOnlyHotspot() {

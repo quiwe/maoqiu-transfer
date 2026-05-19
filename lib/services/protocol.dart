@@ -5,10 +5,12 @@ import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
+import 'app_info.dart';
+
 class TransferProtocol {
   static const int udpPort = 9526;
   static const int tcpPort = 9527;
-  static const String appVersion = '1.0.0';
+  static const String appVersion = AppInfo.version;
   static const Duration broadcastInterval = Duration(seconds: 2);
   static const Duration offlineAfter = Duration(seconds: 8);
   static const int chunkSize = 1024 * 1024;

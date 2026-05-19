@@ -47,5 +47,5 @@ jobs:
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: maoqiu-transfer-release-apk
+          name: maoqiu-transfer-v0.2.0-android-apk
           path: build/app/outputs/flutter-apk/app-release.apk

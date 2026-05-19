@@ -3,9 +3,12 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../app.dart';
+import '../models/app_update.dart';
 import '../models/device_info.dart';
 import '../services/app_controller.dart';
+import '../services/app_info.dart';
 import '../services/tcp_server_service.dart';
+import '../utils/formatters.dart';
 import '../widgets/device_card.dart';
 import '../widgets/receive_request_dialog.dart';
 import '../widgets/transfer_progress_card.dart';
@@ -131,6 +134,10 @@ class _HomeContent extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
       children: [
         _LocalDevicePanel(device: controller.localDevice),
+        if (_shouldShowUpdate(controller)) ...[
+          const SizedBox(height: 10),
+          _UpdateBanner(controller: controller),
+        ],
         const SizedBox(height: 14),
         const _QuickActions(),
         const SizedBox(height: 20),
@@ -182,6 +189,11 @@ class _HomeContent extends StatelessWidget {
         builder: (_) => SendFilePage(device: device),
       ),
     );
+  }
+
+  bool _shouldShowUpdate(AppController controller) {
+    return controller.availableUpdate != null ||
+        controller.updateDownloadState.status != UpdateDownloadStatus.idle;
   }
 }
 
@@ -277,6 +289,83 @@ class _LocalDevicePanel extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+class _UpdateBanner extends StatelessWidget {
+  const _UpdateBanner({required this.controller});
+
+  final AppController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final update = controller.availableUpdate;
+    final download = controller.updateDownloadState;
+    final progress = download.progress;
+
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        border: Border.all(color: theme.colorScheme.primary.withValues(alpha: 0.35)),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.system_update_alt, color: theme.colorScheme.primary),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    update == null
+                        ? '新版安装包下载状态'
+                        : '发现 ${AppInfo.platformLabel} 新版本 ${update.version}',
+                    style: theme.textTheme.titleSmall,
+                  ),
+                ),
+                if (update != null && !download.isDownloading)
+                  FilledButton.icon(
+                    icon: const Icon(Icons.download),
+                    label: const Text('下载'),
+                    onPressed: controller.downloadAvailableUpdate,
+                  ),
+              ],
+            ),
+            if (download.status != UpdateDownloadStatus.idle) ...[
+              const SizedBox(height: 10),
+              LinearProgressIndicator(value: progress),
+              const SizedBox(height: 6),
+              Text(
+                _statusText(download),
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  String _statusText(UpdateDownloadState state) {
+    switch (state.status) {
+      case UpdateDownloadStatus.idle:
+        return '';
+      case UpdateDownloadStatus.downloading:
+        final total = state.totalBytes > 0 ? formatBytes(state.totalBytes) : '--';
+        final percent = state.progress == null
+            ? ''
+            : ' · ${(state.progress! * 100).toStringAsFixed(0)}%';
+        return '${formatBytes(state.receivedBytes)} / $total$percent';
+      case UpdateDownloadStatus.downloaded:
+        return state.filePath == null ? '下载完成' : '下载完成：${state.filePath}';
+      case UpdateDownloadStatus.failed:
+        return state.errorMessage ?? '下载失败';
+    }
   }
 }
 

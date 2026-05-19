@@ -46,12 +46,12 @@ jobs:
           [Setup]
           AppId={{B9F62029-1D88-4B0C-99C7-0B9B7206C00C}
           AppName=毛球互传
-          AppVersion=0.1.0
+          AppVersion=0.2.0
           AppPublisher=MaoQiu
           DefaultDirName={autopf}\MaoQiuTransfer
           DefaultGroupName=毛球互传
           OutputDir=dist
-          OutputBaseFilename=maoqiu-transfer-v0.1.0-windows-setup
+          OutputBaseFilename=maoqiu-transfer-v0.2.0-windows-setup
           Compression=lzma
           SolidCompression=yes
           WizardStyle=modern
@@ -76,8 +76,8 @@ jobs:
       - name: Upload Windows installer
         uses: actions/upload-artifact@v4
         with:
-          name: maoqiu-transfer-v0.1.0-windows-exe
-          path: dist/maoqiu-transfer-v0.1.0-windows-setup.exe
+          name: maoqiu-transfer-v0.2.0-windows-exe
+          path: dist/maoqiu-transfer-v0.2.0-windows-setup.exe
 
   macos:
     name: macOS DMG
@@ -120,10 +120,10 @@ jobs:
             -srcfolder "$app_path" \
             -ov \
             -format UDZO \
-            "dist/maoqiu-transfer-v0.1.0-macos.dmg"
+            "dist/maoqiu-transfer-v0.2.0-macos.dmg"
 
       - name: Upload macOS DMG
         uses: actions/upload-artifact@v4
         with:
-          name: maoqiu-transfer-v0.1.0-macos-dmg
-          path: dist/maoqiu-transfer-v0.1.0-macos.dmg
+          name: maoqiu-transfer-v0.2.0-macos-dmg
+          path: dist/maoqiu-transfer-v0.2.0-macos.dmg

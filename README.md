@@ -10,6 +10,7 @@
 - 保存目录：默认 `Downloads/MaoQiuTransfer`，支持在设置页修改。
 - 手动 IP：发现失败时可以输入对方 IP 和端口继续发送。
 - 一键快传：生成临时传输热点邀请二维码，接收端加入网络后通知发送端发起传输。
+- 检查更新：启动后自动查询 GitHub Releases，并按当前平台下载 `.apk` / `.exe` / `.dmg`。
 
 ## 当前仓库状态
 
@@ -76,7 +77,32 @@ connectToWifi({ ssid, password })
 releaseWifiNetwork()
 ```
 
-Android 36+ 会尝试使用自定义 SSID / 密码创建本地热点；较旧系统会使用系统分配的热点名称和密码，并写入二维码。
+Android 会使用系统 `LocalOnlyHotspot` 创建本地热点，并把系统返回的真实热点名称和密码写入二维码。
+
+## 检查更新
+
+客户端当前版本定义在 `lib/services/app_info.dart` 和 `pubspec.yaml`。启动后会自动请求：
+
+```text
+https://api.github.com/repos/quiwe/maoqiu-transfer/releases/latest
+```
+
+如果最新 Release 版本号高于当前版本，客户端会按平台选择对应资产：
+
+```text
+Android: .apk
+Windows: *windows*.exe
+macOS: *macos*.dmg / *mac*.dmg
+Linux: *linux*.AppImage / .deb / .tar.gz / .zip
+```
+
+设置页会显示当前版本、最新版本、安装包名称和下载进度。下载文件保存到：
+
+```text
+Downloads/MaoQiuTransfer/Updates
+```
+
+如果 GitHub 仓库保持私有，客户端无法无凭据访问 Release API；需要公开 Release，或后续改成自建更新清单接口。
 
 ## 在线 APK 打包
 
@@ -90,7 +116,7 @@ flutter analyze
 flutter build apk --release
 ```
 
-构建成功后，APK 会作为 artifact 上传，名称为 `maoqiu-transfer-release-apk`。
+构建成功后，APK 会作为 artifact 上传，名称为 `maoqiu-transfer-v0.2.0-android-apk`。
 
 ## 第一版验收
 
