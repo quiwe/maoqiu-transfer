@@ -26,10 +26,10 @@ set_entitlement() {
   local file="$1"
   local key="$2"
 
-  if plutil -extract "$key" raw "$file" >/dev/null 2>&1; then
-    plutil -replace "$key" -bool YES "$file"
+  if /usr/libexec/PlistBuddy -c "Print :$key" "$file" >/dev/null 2>&1; then
+    /usr/libexec/PlistBuddy -c "Set :$key true" "$file"
   else
-    plutil -insert "$key" -bool YES "$file"
+    /usr/libexec/PlistBuddy -c "Add :$key bool true" "$file"
   fi
 }
 
