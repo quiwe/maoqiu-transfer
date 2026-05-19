@@ -2,8 +2,8 @@ import 'dart:io';
 
 class AppInfo {
   static const String appName = '毛球互传';
-  static const String version = '0.2.1';
-  static const int buildNumber = 3;
+  static const String version = '0.2.2';
+  static const int buildNumber = 4;
   static const String repository = 'quiwe/maoqiu-transfer';
   static const String latestReleaseApiUrl =
       'https://api.github.com/repos/quiwe/maoqiu-transfer/releases/latest';

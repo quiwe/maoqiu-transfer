@@ -17,39 +17,44 @@ class JoinTransferPage extends StatefulWidget {
 
 class _JoinTransferPageState extends State<JoinTransferPage> {
   final _payloadController = TextEditingController();
-  final MobileScannerController _scannerController = MobileScannerController(
-    autoStart: false,
-    detectionSpeed: DetectionSpeed.noDuplicates,
-    formats: const [BarcodeFormat.qrCode],
-  );
+  MobileScannerController? _scannerController;
   HotspotInvite? _invite;
   String? _error;
   bool _joining = false;
   bool _scanning = false;
   bool _startingScanner = false;
   bool _handledScan = false;
+  bool _handledScannerError = false;
   bool get _supportsCameraScan => Platform.isAndroid;
 
   @override
   void dispose() {
     _payloadController.dispose();
-    _scannerController.dispose();
+    final scannerController = _scannerController;
+    if (scannerController != null) {
+      unawaited(scannerController.dispose());
+    }
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    final scannerController = _scannerController;
     return Scaffold(
       appBar: AppBar(title: const Text('扫码接收')),
       body: ListView(
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
         children: [
-          if (_supportsCameraScan && _scanning) ...[
+          if (_supportsCameraScan && _scanning && scannerController != null) ...[
             _ScannerPanel(
-              controller: _scannerController,
+              controller: scannerController,
               onDetect: _handleScan,
+              onDetectError: _handleScannerError,
               onClose: () {
-                _stopScanner();
+                unawaited(_stopScanner());
+              },
+              onRetry: () {
+                unawaited(_restartScanner());
               },
             ),
             const SizedBox(height: 14),
@@ -77,7 +82,7 @@ class _JoinTransferPageState extends State<JoinTransferPage> {
           OutlinedButton.icon(
             icon: const Icon(Icons.qr_code_scanner),
             label: const Text('解析邀请'),
-            onPressed: _parsePayload,
+            onPressed: () => _parsePayload(),
           ),
           if (_error != null) ...[
             const SizedBox(height: 12),
@@ -93,7 +98,7 @@ class _JoinTransferPageState extends State<JoinTransferPage> {
             FilledButton.icon(
               icon: const Icon(Icons.wifi),
               label: Text(_joining ? '正在准备' : _joinButtonLabel),
-              onPressed: _joining ? null : _join,
+              onPressed: _joining ? null : () => _join(),
             ),
           ],
         ],
@@ -142,55 +147,52 @@ class _JoinTransferPageState extends State<JoinTransferPage> {
       return;
     }
 
+    final scannerController = _createScannerController();
     setState(() {
       _handledScan = false;
+      _handledScannerError = false;
+      _scannerController = scannerController;
       _scanning = true;
-    });
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      unawaited(_startScannerAfterLayout());
+      _startingScanner = false;
     });
   }
 
-  Future<void> _startScannerAfterLayout() async {
-    if (!mounted || !_scanning) {
-      return;
-    }
-
-    try {
-      await _scannerController.start();
-      if (!mounted) {
-        return;
-      }
-      if (!_scanning) {
-        await _stopScanner();
-        return;
-      }
-      setState(() => _startingScanner = false);
-    } catch (error) {
-      if (!mounted) {
-        return;
-      }
-      setState(() {
-        _error = '相机启动失败：$error';
-        _scanning = false;
-        _startingScanner = false;
-      });
-    }
+  MobileScannerController _createScannerController() {
+    return MobileScannerController(
+      autoStart: true,
+      detectionSpeed: DetectionSpeed.noDuplicates,
+      facing: CameraFacing.back,
+      formats: const [BarcodeFormat.qrCode],
+    );
   }
 
   Future<void> _stopScanner() async {
+    final scannerController = _scannerController;
     try {
-      await _scannerController.stop();
+      await scannerController?.stop();
     } catch (_) {
       // Stopping is best-effort because the Android camera may still be
       // completing a previous start request.
     } finally {
       if (mounted) {
         setState(() {
+          _scannerController = null;
           _scanning = false;
           _startingScanner = false;
         });
       }
+      try {
+        await scannerController?.dispose();
+      } catch (_) {
+        // Disposing after a native camera error is best-effort.
+      }
+    }
+  }
+
+  Future<void> _restartScanner() async {
+    await _stopScanner();
+    if (mounted) {
+      await _startScanner();
     }
   }
 
@@ -213,28 +215,43 @@ class _JoinTransferPageState extends State<JoinTransferPage> {
 
     _handledScan = true;
     _payloadController.text = rawValue;
-    _parsePayload();
+    final invite = _parsePayload();
     await _stopScanner();
+    if (invite != null && mounted) {
+      await _join(invite);
+    }
   }
 
-  void _parsePayload() {
+  void _handleScannerError(Object error, StackTrace stackTrace) {
+    if (_handledScannerError || !mounted) {
+      return;
+    }
+    _handledScannerError = true;
+    setState(() {
+      _error = '相机识别异常，请点击重试，或把二维码内容粘贴到输入框后解析。';
+    });
+  }
+
+  HotspotInvite? _parsePayload() {
     try {
       final invite = HotspotInvite.fromQrPayload(_payloadController.text);
       setState(() {
         _invite = invite;
         _error = invite.isExpired ? '邀请已过期' : null;
       });
+      return invite.isExpired ? null : invite;
     } catch (error) {
       setState(() {
         _invite = null;
         _error = _payloadController.text.trim().isEmpty ? null : error.toString();
       });
+      return null;
     }
   }
 
-  Future<void> _join() async {
-    final invite = _invite;
-    if (invite == null || invite.isExpired) {
+  Future<void> _join([HotspotInvite? scannedInvite]) async {
+    final invite = scannedInvite ?? _invite;
+    if (_joining || invite == null || invite.isExpired) {
       return;
     }
 
@@ -271,12 +288,16 @@ class _ScannerPanel extends StatelessWidget {
   const _ScannerPanel({
     required this.controller,
     required this.onDetect,
+    required this.onDetectError,
     required this.onClose,
+    required this.onRetry,
   });
 
   final MobileScannerController controller;
   final void Function(BarcodeCapture capture) onDetect;
+  final void Function(Object error, StackTrace stackTrace) onDetectError;
   final VoidCallback onClose;
+  final VoidCallback onRetry;
 
   @override
   Widget build(BuildContext context) {
@@ -291,6 +312,13 @@ class _ScannerPanel extends StatelessWidget {
             MobileScanner(
               controller: controller,
               onDetect: onDetect,
+              onDetectError: onDetectError,
+              errorBuilder: (context, error) {
+                return _ScannerErrorView(
+                  onRetry: onRetry,
+                  onClose: onClose,
+                );
+              },
             ),
             DecoratedBox(
               decoration: BoxDecoration(
@@ -310,6 +338,72 @@ class _ScannerPanel extends StatelessWidget {
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ScannerErrorView extends StatelessWidget {
+  const _ScannerErrorView({
+    required this.onRetry,
+    required this.onClose,
+  });
+
+  final VoidCallback onRetry;
+  final VoidCallback onClose;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return ColoredBox(
+      color: Colors.black,
+      child: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.error_outline,
+                color: theme.colorScheme.error,
+                size: 44,
+              ),
+              const SizedBox(height: 12),
+              Text(
+                '相机启动失败',
+                style: theme.textTheme.titleMedium?.copyWith(
+                  color: Colors.white,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                '请重试，或粘贴二维码内容后解析。',
+                textAlign: TextAlign.center,
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: Colors.white70,
+                ),
+              ),
+              const SizedBox(height: 16),
+              Wrap(
+                alignment: WrapAlignment.center,
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  FilledButton.icon(
+                    icon: const Icon(Icons.refresh),
+                    label: const Text('重试'),
+                    onPressed: onRetry,
+                  ),
+                  OutlinedButton.icon(
+                    icon: const Icon(Icons.close),
+                    label: const Text('关闭'),
+                    onPressed: onClose,
+                  ),
+                ],
+              ),
+            ],
+          ),
         ),
       ),
     );

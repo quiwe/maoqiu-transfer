@@ -15,21 +15,26 @@ class SettingsService {
   Future<void> init() async {
     _prefs = await SharedPreferences.getInstance();
     _saveDirectory = _prefs?.getString(_saveDirectoryKey);
-    _saveDirectory ??= (await defaultSaveDirectory()).path;
+    if (_saveDirectory == null || _saveDirectory!.isEmpty) {
+      final fallback = await defaultSaveDirectory();
+      _saveDirectory = fallback.path;
+      await _prefs?.setString(_saveDirectoryKey, fallback.path);
+    }
   }
 
   Future<Directory> getSaveDirectory() async {
     final path = _saveDirectory;
-    if (path == null || path.isEmpty) {
-      final fallback = await defaultSaveDirectory();
-      _saveDirectory = fallback.path;
-      return fallback;
+    if (path != null && path.isNotEmpty) {
+      final directory = await _tryCreateDirectory(Directory(path));
+      if (directory != null) {
+        return directory;
+      }
     }
-    final directory = Directory(path);
-    if (!await directory.exists()) {
-      await directory.create(recursive: true);
-    }
-    return directory;
+
+    final fallback = await defaultSaveDirectory();
+    _saveDirectory = fallback.path;
+    await _prefs?.setString(_saveDirectoryKey, fallback.path);
+    return fallback;
   }
 
   Future<void> setSaveDirectory(String path) async {
@@ -42,27 +47,56 @@ class SettingsService {
   }
 
   Future<Directory> defaultSaveDirectory() async {
-    Directory? base;
+    final candidates = <Directory?>[];
     try {
       if (Platform.isAndroid) {
         final externalDownloads = await getExternalStorageDirectories(
           type: StorageDirectory.downloads,
         );
         if (externalDownloads != null && externalDownloads.isNotEmpty) {
-          base = externalDownloads.first;
+          candidates.add(externalDownloads.first);
         }
       } else {
-        base = await getDownloadsDirectory();
+        candidates.add(await getDownloadsDirectory());
       }
     } catch (_) {
-      base = null;
+      // Some sandboxed desktop builds cannot resolve the downloads directory.
     }
-    base ??= await getApplicationDocumentsDirectory();
 
-    final directory = Directory(p.join(base.path, 'MaoQiuTransfer'));
-    if (!await directory.exists()) {
-      await directory.create(recursive: true);
+    try {
+      candidates.add(await getApplicationDocumentsDirectory());
+    } catch (_) {
+      // Fall through to the temporary directory fallback below.
     }
-    return directory;
+    try {
+      candidates.add(await getTemporaryDirectory());
+    } catch (_) {
+      // The final error below is clearer than surfacing a platform exception.
+    }
+
+    for (final base in candidates) {
+      if (base == null) {
+        continue;
+      }
+      final directory = await _tryCreateDirectory(
+        Directory(p.join(base.path, 'MaoQiuTransfer')),
+      );
+      if (directory != null) {
+        return directory;
+      }
+    }
+
+    throw FileSystemException('No writable save directory is available.');
+  }
+
+  Future<Directory?> _tryCreateDirectory(Directory directory) async {
+    try {
+      if (!await directory.exists()) {
+        await directory.create(recursive: true);
+      }
+      return directory;
+    } on FileSystemException {
+      return null;
+    }
   }
 }

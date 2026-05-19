@@ -14,13 +14,24 @@ if [[ -z "${activity:-}" || ! -f "$activity" ]]; then
   exit 1
 fi
 
-if ! grep -q "CHANGE_WIFI_MULTICAST_STATE" "$manifest"; then
-  perl -0pi -e 's#<manifest([^>]*)>#<manifest$1>\n    <uses-permission android:name="android.permission.INTERNET" />\n    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />\n    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />\n    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />\n    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />\n    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />\n    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES" android:usesPermissionFlags="neverForLocation" />#' "$manifest"
-fi
+ensure_manifest_line() {
+  local match="$1"
+  local line="$2"
+  if ! grep -q "$match" "$manifest"; then
+    LINE="$line" perl -0pi -e 'BEGIN { $line = $ENV{"LINE"} } s#<manifest([^>]*)>#<manifest$1>\n    $line#' "$manifest"
+  fi
+}
 
-if ! grep -q "android.permission.CAMERA" "$manifest"; then
-  perl -0pi -e 's#<manifest([^>]*)>#<manifest$1>\n    <uses-permission android:name="android.permission.CAMERA" />\n    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />#' "$manifest"
-fi
+ensure_manifest_line "android.permission.INTERNET" '<uses-permission android:name="android.permission.INTERNET" />'
+ensure_manifest_line "android.permission.ACCESS_NETWORK_STATE" '<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />'
+ensure_manifest_line "android.permission.ACCESS_WIFI_STATE" '<uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />'
+ensure_manifest_line "android.permission.CHANGE_WIFI_STATE" '<uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />'
+ensure_manifest_line "android.permission.CHANGE_WIFI_MULTICAST_STATE" '<uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />'
+ensure_manifest_line "android.permission.CHANGE_NETWORK_STATE" '<uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />'
+ensure_manifest_line "android.permission.ACCESS_FINE_LOCATION" '<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="32" />'
+ensure_manifest_line "android.permission.NEARBY_WIFI_DEVICES" '<uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES" android:usesPermissionFlags="neverForLocation" />'
+ensure_manifest_line "android.permission.CAMERA" '<uses-permission android:name="android.permission.CAMERA" />'
+ensure_manifest_line "android.hardware.camera" '<uses-feature android:name="android.hardware.camera" android:required="false" />'
 
 perl -0pi -e 's/android:label="[^"]*"/android:label="毛球互传"/' "$manifest"
 
@@ -38,6 +49,8 @@ fi
 cat > "$activity" <<KOTLIN
 $package_line
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.net.wifi.WifiManager
 import android.net.wifi.WifiNetworkSpecifier
 import android.net.ConnectivityManager
@@ -126,15 +139,38 @@ class MainActivity : FlutterActivity() {
             result.error("unsupported_android_version", "LocalOnlyHotspot requires Android 8.0 or newer.", null)
             return
         }
+        if (!hasWifiRuntimePermission()) {
+            result.error("missing_wifi_permission", "LocalOnlyHotspot requires Nearby Wi-Fi Devices or location permission.", null)
+            return
+        }
 
         val wifiManager = applicationContext.getSystemService(WIFI_SERVICE) as WifiManager
         hotspotReservation?.close()
         hotspotReservation = null
+        val completed = AtomicBoolean(false)
+        val timeout = Runnable {
+            if (completed.compareAndSet(false, true)) {
+                hotspotReservation?.close()
+                hotspotReservation = null
+                result.error("local_only_hotspot_timeout", "Timed out waiting for LocalOnlyHotspot to start.", null)
+            }
+        }
 
         val callback = object : WifiManager.LocalOnlyHotspotCallback() {
             override fun onStarted(reservation: WifiManager.LocalOnlyHotspotReservation) {
+                if (!completed.compareAndSet(false, true)) {
+                    reservation.close()
+                    return
+                }
+                mainHandler.removeCallbacks(timeout)
                 hotspotReservation = reservation
                 val credentials = hotspotCredentials(reservation)
+                if (credentials.first.isBlank()) {
+                    hotspotReservation?.close()
+                    hotspotReservation = null
+                    result.error("local_only_hotspot_missing_credentials", "Android did not return hotspot credentials.", null)
+                    return
+                }
                 result.success(
                     mapOf(
                         "ssid" to credentials.first,
@@ -149,13 +185,26 @@ class MainActivity : FlutterActivity() {
             }
 
             override fun onFailed(reason: Int) {
+                if (!completed.compareAndSet(false, true)) {
+                    return
+                }
+                mainHandler.removeCallbacks(timeout)
                 hotspotReservation = null
                 result.error("local_only_hotspot_failed", "LocalOnlyHotspot failed with reason: \$reason", reason)
             }
         }
 
-        @Suppress("DEPRECATION")
-        wifiManager.startLocalOnlyHotspot(callback, mainHandler)
+        try {
+            @Suppress("DEPRECATION")
+            wifiManager.startLocalOnlyHotspot(callback, mainHandler)
+            mainHandler.postDelayed(timeout, 45000)
+        } catch (error: Exception) {
+            mainHandler.removeCallbacks(timeout)
+            if (completed.compareAndSet(false, true)) {
+                hotspotReservation = null
+                result.error("local_only_hotspot_start_failed", error.message ?: "LocalOnlyHotspot start failed.", null)
+            }
+        }
     }
 
     private fun stopLocalOnlyHotspot() {
@@ -166,6 +215,10 @@ class MainActivity : FlutterActivity() {
     private fun connectToWifi(call: MethodCall, result: MethodChannel.Result) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
             result.error("unsupported_android_version", "Automatic Wi-Fi join requires Android 10 or newer.", null)
+            return
+        }
+        if (!hasWifiRuntimePermission()) {
+            result.error("missing_wifi_permission", "Automatic Wi-Fi join requires Nearby Wi-Fi Devices or location permission.", null)
             return
         }
 
@@ -221,9 +274,27 @@ class MainActivity : FlutterActivity() {
             }
         }
 
-        wifiNetworkCallback = callback
-        connectivityManager.requestNetwork(request, callback)
-        mainHandler.postDelayed(timeout, 60000)
+        try {
+            wifiNetworkCallback = callback
+            connectivityManager.requestNetwork(request, callback)
+            mainHandler.postDelayed(timeout, 60000)
+        } catch (error: Exception) {
+            mainHandler.removeCallbacks(timeout)
+            wifiNetworkCallback = null
+            if (completed.compareAndSet(false, true)) {
+                result.error("wifi_connection_failed", error.message ?: "Wi-Fi connection failed.", null)
+            }
+        }
+    }
+
+    private fun hasWifiRuntimePermission(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+            return true
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            return checkSelfPermission(Manifest.permission.NEARBY_WIFI_DEVICES) == PackageManager.PERMISSION_GRANTED
+        }
+        return checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
     }
 
     private fun releaseWifiNetwork() {

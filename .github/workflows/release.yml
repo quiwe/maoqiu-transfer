@@ -163,6 +163,9 @@ jobs:
       - name: Generate macOS platform files
         run: flutter create . --platforms=macos
 
+      - name: Patch macOS platform
+        run: ./tool/patch_macos_platform.sh
+
       - name: Install dependencies
         run: flutter pub get
 
@@ -187,11 +190,25 @@ jobs:
             -format UDZO \
             "dist/maoqiu-transfer-v${VERSION}-macos.dmg"
 
-      - name: Upload macOS DMG artifact
+      - name: Build PKG installer
+        run: |
+          app_path="$(find build/macos/Build/Products/Release -maxdepth 1 -name '*.app' | head -n 1)"
+          if [ -z "$app_path" ]; then
+            echo "macOS app bundle not found" >&2
+            exit 1
+          fi
+          pkgbuild \
+            --install-location /Applications \
+            --component "$app_path" \
+            "dist/maoqiu-transfer-v${VERSION}-macos.pkg"
+
+      - name: Upload macOS package artifacts
         uses: actions/upload-artifact@v4
         with:
           name: release-macos
-          path: dist/maoqiu-transfer-v*-macos.dmg
+          path: |
+            dist/maoqiu-transfer-v*-macos.dmg
+            dist/maoqiu-transfer-v*-macos.pkg
 
   release:
     name: Publish GitHub Release
@@ -214,7 +231,8 @@ jobs:
           name: MaoQiu Transfer ${{ github.ref_name }}
           body: |
             - 修复 Android 扫码相机启动异常。
-            - 修复同一 Wi-Fi 下自动发现设备不稳定的问题。
-            - 快传热点流程改为扫码手机端开启热点，被扫码端自动连接后传输。
-            - 传输过程显示进度，完成或失败后显示提示。
+            - 修复 Android 扫码后手机端临时热点未自动开启的问题。
+            - 修复 macOS 启动和更新下载目录的沙盒权限问题。
+            - macOS Release 新增 `.pkg` 安装包，并保留 `.dmg`。
+            - 软件更新优先选择 macOS `.pkg`，并在下载目录不可写时自动回退。
           files: release-assets/*

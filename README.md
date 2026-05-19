@@ -10,7 +10,8 @@
 - 保存目录：默认 `Downloads/MaoQiuTransfer`，支持在设置页修改。
 - 手动 IP：发现失败时可以输入对方 IP 和端口继续发送。
 - 一键快传：发送端生成邀请二维码；扫码手机端开启临时热点，发送端自动连接手机热点后发起传输。
-- 检查更新：启动后自动查询 GitHub Releases，并按当前平台下载 `.apk` / `.exe` / `.dmg`。
+- 检查更新：启动后自动查询 GitHub Releases，并按当前平台下载 `.apk` / `.exe` / `.pkg` / `.dmg`。
+- macOS：Release 同时产出 `.pkg` 安装包和 `.dmg`；客户端优先下载 `.pkg`。
 
 ## 当前仓库状态
 
@@ -34,6 +35,7 @@ Android 端生成平台目录后，需要确认 `android/app/src/main/AndroidMan
 <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES" android:usesPermissionFlags="neverForLocation" />
 <uses-permission android:name="android.permission.CAMERA" />
 <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
+<uses-feature android:name="android.hardware.camera" android:required="false" />
 ```
 
 仓库里的 `tool/patch_android_platform.sh` 会在生成 Android 平台目录后自动补齐这些权限、APK 应用名、UDP 发现所需的 `MulticastLock` 和 `LocalOnlyHotspot` 原生通道。GitHub Actions 在线打包也会执行这个脚本。
@@ -94,7 +96,7 @@ https://api.github.com/repos/quiwe/maoqiu-transfer/releases/latest
 ```text
 Android: .apk
 Windows: *windows*.exe
-macOS: *macos*.dmg / *mac*.dmg
+macOS: *macos*.pkg / *macos*.dmg / *mac*.dmg
 Linux: *linux*.AppImage / .deb / .tar.gz / .zip
 ```
 
@@ -118,7 +120,17 @@ flutter analyze
 flutter build apk --release
 ```
 
-构建成功后，APK 会作为 artifact 上传，名称为 `maoqiu-transfer-v0.2.1-android-apk`。
+## macOS 安装包
+
+本地安装 Flutter 后，可以直接生成 macOS `.pkg` 安装包和 `.dmg`：
+
+```sh
+./tool/build_macos_packages.sh
+```
+
+GitHub Actions 的 `.github/workflows/desktop-packages.yml` 和 Release 流程也会在生成 macOS 平台目录后执行 `./tool/patch_macos_platform.sh`，补齐网络、下载目录和用户选择目录权限，再上传 `.pkg` / `.dmg`。
+
+构建成功后，APK 会作为 artifact 上传，名称为 `maoqiu-transfer-v<版本号>-android-apk`。
 
 ## 第一版验收
 

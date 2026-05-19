@@ -152,62 +152,105 @@ class GitHubUpdateService {
   }
 
   Map<String, dynamic>? _selectPlatformAsset(List<Map<String, dynamic>> assets) {
-    bool matches(String name) {
+    int matchScore(String name) {
       final lower = name.toLowerCase();
       switch (AppInfo.platformKey) {
         case 'android':
-          return lower.endsWith('.apk');
+          return lower.endsWith('.apk') ? 1 : 0;
         case 'windows':
           return lower.endsWith('.exe') &&
-              (lower.contains('windows') || lower.contains('win'));
+                  (lower.contains('windows') || lower.contains('win'))
+              ? 1
+              : 0;
         case 'macos':
-          return lower.endsWith('.dmg') &&
-              (lower.contains('macos') ||
-                  lower.contains('darwin') ||
-                  lower.contains('mac'));
+          final isMac = lower.contains('macos') ||
+              lower.contains('darwin') ||
+              lower.contains('mac');
+          if (!isMac) {
+            return 0;
+          }
+          if (lower.endsWith('.pkg')) {
+            return 2;
+          }
+          return lower.endsWith('.dmg') ? 1 : 0;
         case 'linux':
           return lower.contains('linux') &&
-              (lower.endsWith('.appimage') ||
-                  lower.endsWith('.deb') ||
-                  lower.endsWith('.tar.gz') ||
-                  lower.endsWith('.zip'));
+                  (lower.endsWith('.appimage') ||
+                      lower.endsWith('.deb') ||
+                      lower.endsWith('.tar.gz') ||
+                      lower.endsWith('.zip'))
+              ? 1
+              : 0;
         default:
-          return false;
+          return 0;
       }
     }
 
+    Map<String, dynamic>? bestAsset;
+    var bestScore = 0;
     for (final asset in assets) {
       final name = asset['name'] as String? ?? '';
-      if (matches(name)) {
-        return asset;
+      final score = matchScore(name);
+      if (score > bestScore) {
+        bestScore = score;
+        bestAsset = asset;
       }
     }
-    return null;
+    return bestAsset;
   }
 
   Future<Directory> _updatesDirectory() async {
-    Directory? base;
+    final candidates = <Directory?>[];
     try {
       if (Platform.isAndroid) {
         final directories = await getExternalStorageDirectories(
           type: StorageDirectory.downloads,
         );
         if (directories != null && directories.isNotEmpty) {
-          base = directories.first;
+          candidates.add(directories.first);
         }
       } else {
-        base = await getDownloadsDirectory();
+        candidates.add(await getDownloadsDirectory());
       }
     } catch (_) {
-      base = null;
+      // Desktop sandboxing can deny access to Downloads.
     }
 
-    base ??= await getApplicationDocumentsDirectory();
-    final directory = Directory(p.join(base.path, 'MaoQiuTransfer', 'Updates'));
-    if (!await directory.exists()) {
-      await directory.create(recursive: true);
+    try {
+      candidates.add(await getApplicationDocumentsDirectory());
+    } catch (_) {
+      // Fall through to the temporary directory fallback.
     }
-    return directory;
+    try {
+      candidates.add(await getTemporaryDirectory());
+    } catch (_) {
+      // The final error below is clearer than surfacing a platform exception.
+    }
+
+    for (final base in candidates) {
+      if (base == null) {
+        continue;
+      }
+      final directory = await _tryCreateDirectory(
+        Directory(p.join(base.path, 'MaoQiuTransfer', 'Updates')),
+      );
+      if (directory != null) {
+        return directory;
+      }
+    }
+
+    throw FileSystemException('No writable update directory is available.');
+  }
+
+  Future<Directory?> _tryCreateDirectory(Directory directory) async {
+    try {
+      if (!await directory.exists()) {
+        await directory.create(recursive: true);
+      }
+      return directory;
+    } on FileSystemException {
+      return null;
+    }
   }
 
   String _normalizeVersion(String raw) {

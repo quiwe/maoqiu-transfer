@@ -32,6 +32,9 @@ class HotspotJoinService {
     }
 
     if (Platform.isAndroid) {
+      await _ensureAndroidWifiPermissions(
+        purpose: AndroidWifiPermissionPurpose.connectHotspot,
+      );
       await _platformService.connectToWifi(
         ssid: invite.ssid,
         password: invite.password,
@@ -61,6 +64,11 @@ class HotspotJoinService {
     required String ssid,
     required String password,
   }) async {
+    if (Platform.isAndroid) {
+      await _ensureAndroidWifiPermissions(
+        purpose: AndroidWifiPermissionPurpose.connectHotspot,
+      );
+    }
     await _platformService.connectToWifi(ssid: ssid, password: password);
     if (Platform.isAndroid) {
       _joinedSenderWifi = true;
@@ -98,7 +106,9 @@ class HotspotJoinService {
       throw StateError('这个二维码需要用 Android 手机扫码并创建临时热点。');
     }
 
-    await _ensureAndroidHotspotPermissions();
+    await _ensureAndroidWifiPermissions(
+      purpose: AndroidWifiPermissionPurpose.createHotspot,
+    );
     final hotspot = await _platformService.startLocalOnlyHotspot(
       suggestedSsid: 'MaoQiu-Receiver',
       suggestedPassword: 'maoqiu-transfer',
@@ -234,7 +244,9 @@ class HotspotJoinService {
     }.toList();
   }
 
-  Future<void> _ensureAndroidHotspotPermissions() async {
+  Future<void> _ensureAndroidWifiPermissions({
+    required AndroidWifiPermissionPurpose purpose,
+  }) async {
     final nearbyStatus = await Permission.nearbyWifiDevices.request();
     if (nearbyStatus.isGranted) {
       return;
@@ -242,7 +254,16 @@ class HotspotJoinService {
 
     final locationStatus = await Permission.locationWhenInUse.request();
     if (!locationStatus.isGranted && !nearbyStatus.isGranted) {
-      throw StateError('Android 创建临时热点需要允许附近设备或位置信息权限。');
+      throw StateError(purpose.permissionMessage);
     }
   }
+}
+
+enum AndroidWifiPermissionPurpose {
+  createHotspot('Android 创建临时热点需要允许附近设备或位置信息权限。'),
+  connectHotspot('Android 自动连接热点需要允许附近设备或位置信息权限。');
+
+  const AndroidWifiPermissionPurpose(this.permissionMessage);
+
+  final String permissionMessage;
 }
