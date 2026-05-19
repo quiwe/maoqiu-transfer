@@ -1,8 +1,7 @@
+import 'dart:convert';
 import 'dart:io';
-import 'dart:math';
 
 import 'package:flutter/services.dart';
-import 'package:permission_handler/permission_handler.dart';
 import 'package:uuid/uuid.dart';
 
 import '../models/connection_invite.dart';
@@ -15,52 +14,26 @@ class HotspotSessionService {
       : _platformService = platformService ?? HotspotPlatformService();
 
   final HotspotPlatformService _platformService;
-  final Random _random = Random.secure();
   final Uuid _uuid = const Uuid();
 
   Future<HotspotSession> createSession({
     required DeviceInfo localDevice,
     required List<TransferFile> files,
   }) async {
-    final suffix = _hex(4);
-    var ssid = 'MaoQiu-Transfer-$suffix';
-    var password = 'mq-${_digits(4)}-${_digits(4)}';
-    var hostIp = localDevice.ip;
-    var nativeHotspotActive = false;
-    var platformMessage = '当前平台未创建系统热点，请让接收端加入同一网络后扫码继续。';
-
-    if (Platform.isAndroid) {
-      try {
-        await _ensureAndroidHotspotPermissions();
-        final result = await _platformService.startLocalOnlyHotspot(
-          suggestedSsid: ssid,
-          suggestedPassword: password,
-        );
-        ssid = result.ssid.isEmpty ? ssid : result.ssid;
-        password = result.password.isEmpty ? password : result.password;
-        hostIp = result.hostIp.isEmpty ? hostIp : result.hostIp;
-        nativeHotspotActive = true;
-        platformMessage = '已创建仅本地通信的临时热点。';
-      } on MissingPluginException {
-        platformMessage = 'Android 热点原生通道尚未接入，已生成可手动加入的邀请二维码。';
-      } catch (error) {
-        platformMessage = '自动创建热点失败：$error';
-      }
-    }
-
     return HotspotSession(
       invite: HotspotInvite(
-        ssid: ssid,
-        password: password,
-        hostIp: hostIp,
+        ssid: '',
+        password: '',
+        hostIp: localDevice.ip,
         port: TransferProtocol.tcpPort,
         token: _uuid.v4(),
         expireAt: DateTime.now().add(const Duration(minutes: 5)),
+        hotspotOwner: HotspotOwner.receiver,
       ),
       files: List.unmodifiable(files),
       createdAt: DateTime.now(),
-      nativeHotspotActive: nativeHotspotActive,
-      platformMessage: platformMessage,
+      nativeHotspotActive: false,
+      platformMessage: '请用手机扫码。手机会开启临时热点，本机随后自动连接并发送文件。',
     );
   }
 
@@ -73,28 +46,6 @@ class HotspotSessionService {
     } catch (_) {
       return;
     }
-  }
-
-  Future<void> _ensureAndroidHotspotPermissions() async {
-    final nearbyStatus = await Permission.nearbyWifiDevices.request();
-    if (nearbyStatus.isGranted) {
-      return;
-    }
-
-    final locationStatus = await Permission.locationWhenInUse.request();
-    if (!locationStatus.isGranted && !nearbyStatus.isGranted) {
-      throw StateError('Android 创建临时热点需要允许附近设备或位置信息权限。');
-    }
-  }
-
-  String _hex(int length) {
-    const chars = '0123456789ABCDEF';
-    return List.generate(length, (_) => chars[_random.nextInt(chars.length)])
-        .join();
-  }
-
-  String _digits(int length) {
-    return List.generate(length, (_) => _random.nextInt(10).toString()).join();
   }
 }
 
@@ -140,6 +91,16 @@ class HotspotPlatformService {
     required String ssid,
     required String password,
   }) async {
+    if (Platform.isWindows) {
+      return _connectToWifiOnWindows(ssid: ssid, password: password);
+    }
+    if (Platform.isMacOS) {
+      return _connectToWifiOnMacOS(ssid: ssid, password: password);
+    }
+    if (Platform.isLinux) {
+      return _connectToWifiOnLinux(ssid: ssid, password: password);
+    }
+
     final connected = await _channel.invokeMethod<bool>(
       'connectToWifi',
       {
@@ -151,6 +112,147 @@ class HotspotPlatformService {
   }
 
   Future<void> releaseWifiNetwork() async {
-    await _channel.invokeMethod<void>('releaseWifiNetwork');
+    if (Platform.isAndroid) {
+      await _channel.invokeMethod<void>('releaseWifiNetwork');
+    }
+  }
+
+  Future<bool> _connectToWifiOnWindows({
+    required String ssid,
+    required String password,
+  }) async {
+    final temp = await Directory.systemTemp.createTemp('maoqiu-wifi-');
+    final profile = File('${temp.path}${Platform.pathSeparator}wifi.xml');
+    try {
+      await profile.writeAsString(
+        _windowsWifiProfile(ssid: ssid, password: password),
+      );
+      final add = await Process.run(
+        'netsh',
+        ['wlan', 'add', 'profile', 'filename=${profile.path}', 'user=current'],
+      );
+      if (add.exitCode != 0) {
+        throw StateError(_processError(add));
+      }
+
+      final connect = await Process.run(
+        'netsh',
+        ['wlan', 'connect', 'name=$ssid', 'ssid=$ssid'],
+      );
+      if (connect.exitCode != 0) {
+        throw StateError(_processError(connect));
+      }
+      return true;
+    } finally {
+      if (await temp.exists()) {
+        await temp.delete(recursive: true);
+      }
+    }
+  }
+
+  Future<bool> _connectToWifiOnMacOS({
+    required String ssid,
+    required String password,
+  }) async {
+    final device = await _macOSWifiDevice();
+    final result = await Process.run(
+      'networksetup',
+      ['-setairportnetwork', device, ssid, password],
+    );
+    if (result.exitCode != 0) {
+      throw StateError(_processError(result));
+    }
+    return true;
+  }
+
+  Future<String> _macOSWifiDevice() async {
+    final result = await Process.run('networksetup', ['-listallhardwareports']);
+    if (result.exitCode != 0) {
+      throw StateError(_processError(result));
+    }
+
+    final lines = (result.stdout as String).split(RegExp(r'\r?\n'));
+    for (var index = 0; index < lines.length; index += 1) {
+      if (!lines[index].contains('Hardware Port: Wi-Fi') &&
+          !lines[index].contains('Hardware Port: AirPort')) {
+        continue;
+      }
+      for (var next = index + 1; next < lines.length; next += 1) {
+        final line = lines[next].trim();
+        if (line.startsWith('Device:')) {
+          return line.substring('Device:'.length).trim();
+        }
+      }
+    }
+    throw StateError('未找到 macOS Wi-Fi 网卡。');
+  }
+
+  Future<bool> _connectToWifiOnLinux({
+    required String ssid,
+    required String password,
+  }) async {
+    final result = await Process.run(
+      'nmcli',
+      ['dev', 'wifi', 'connect', ssid, 'password', password],
+    );
+    if (result.exitCode != 0) {
+      throw StateError(_processError(result));
+    }
+    return true;
+  }
+
+  String _windowsWifiProfile({
+    required String ssid,
+    required String password,
+  }) {
+    final escapedSsid = _xmlEscape(ssid);
+    final escapedPassword = _xmlEscape(password);
+    final ssidHex = utf8.encode(ssid).map((byte) {
+      return byte.toRadixString(16).padLeft(2, '0').toUpperCase();
+    }).join();
+
+    return '''
+<?xml version="1.0"?>
+<WLANProfile xmlns="http://www.microsoft.com/networking/WLAN/profile/v1">
+  <name>$escapedSsid</name>
+  <SSIDConfig>
+    <SSID>
+      <hex>$ssidHex</hex>
+      <name>$escapedSsid</name>
+    </SSID>
+  </SSIDConfig>
+  <connectionType>ESS</connectionType>
+  <connectionMode>manual</connectionMode>
+  <MSM>
+    <security>
+      <authEncryption>
+        <authentication>WPA2PSK</authentication>
+        <encryption>AES</encryption>
+        <useOneX>false</useOneX>
+      </authEncryption>
+      <sharedKey>
+        <keyType>passPhrase</keyType>
+        <protected>false</protected>
+        <keyMaterial>$escapedPassword</keyMaterial>
+      </sharedKey>
+    </security>
+  </MSM>
+</WLANProfile>
+''';
+  }
+
+  String _xmlEscape(String value) {
+    return value
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&apos;');
+  }
+
+  String _processError(ProcessResult result) {
+    final stderr = result.stderr.toString().trim();
+    final stdout = result.stdout.toString().trim();
+    return stderr.isNotEmpty ? stderr : stdout;
   }
 }

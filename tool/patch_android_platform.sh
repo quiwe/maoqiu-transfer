@@ -59,6 +59,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 class MainActivity : FlutterActivity() {
     private var hotspotReservation: WifiManager.LocalOnlyHotspotReservation? = null
+    private var multicastLock: WifiManager.MulticastLock? = null
     private var wifiNetworkCallback: ConnectivityManager.NetworkCallback? = null
     private val channelName = "maoqiu_transfer/hotspot"
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -78,6 +79,11 @@ class MainActivity : FlutterActivity() {
                         releaseWifiNetwork()
                         result.success(null)
                     }
+                    "acquireMulticastLock" -> acquireMulticastLock(result)
+                    "releaseMulticastLock" -> {
+                        releaseMulticastLock()
+                        result.success(null)
+                    }
                     else -> result.notImplemented()
                 }
             }
@@ -85,8 +91,34 @@ class MainActivity : FlutterActivity() {
 
     override fun onDestroy() {
         releaseWifiNetwork()
+        releaseMulticastLock()
         stopLocalOnlyHotspot()
         super.onDestroy()
+    }
+
+    private fun acquireMulticastLock(result: MethodChannel.Result) {
+        val wifiManager = applicationContext.getSystemService(WIFI_SERVICE) as WifiManager
+        val current = multicastLock
+        if (current?.isHeld == true) {
+            result.success(null)
+            return
+        }
+
+        multicastLock = wifiManager.createMulticastLock("maoqiu_transfer_discovery").apply {
+            setReferenceCounted(false)
+            acquire()
+        }
+        result.success(null)
+    }
+
+    private fun releaseMulticastLock() {
+        try {
+            if (multicastLock?.isHeld == true) {
+                multicastLock?.release()
+            }
+        } catch (_: Exception) {
+        }
+        multicastLock = null
     }
 
     private fun startLocalOnlyHotspot(call: MethodCall, result: MethodChannel.Result) {

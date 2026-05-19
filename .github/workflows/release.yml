@@ -1,15 +1,77 @@
-name: Desktop Packages
+name: Release Packages
 
 on:
-  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
 
 jobs:
+  android:
+    name: Android APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Generate Android platform files
+        run: flutter create . --platforms=android
+
+      - name: Patch Android APK platform
+        run: ./tool/patch_android_platform.sh
+
+      - name: Install Android API 36
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36"
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Patch Android plugin compile SDK
+        run: ./tool/patch_android_pub_cache.sh
+
+      - name: Analyze
+        run: flutter analyze
+
+      - name: Build release APK
+        run: flutter build apk --release
+
+      - name: Stage APK
+        run: |
+          mkdir -p dist
+          cp build/app/outputs/flutter-apk/app-release.apk "dist/maoqiu-transfer-v${VERSION}-android.apk"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-android
+          path: dist/maoqiu-transfer-v*-android.apk
+
   windows:
     name: Windows Installer EXE
     runs-on: windows-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Resolve version
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME.TrimStart("v")
+          "VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -46,12 +108,12 @@ jobs:
           [Setup]
           AppId={{B9F62029-1D88-4B0C-99C7-0B9B7206C00C}
           AppName=毛球互传
-          AppVersion=0.2.1
+          AppVersion=$($env:VERSION)
           AppPublisher=MaoQiu
           DefaultDirName={autopf}\MaoQiuTransfer
           DefaultGroupName=毛球互传
           OutputDir=dist
-          OutputBaseFilename=maoqiu-transfer-v0.2.1-windows-setup
+          OutputBaseFilename=maoqiu-transfer-v$($env:VERSION)-windows-setup
           Compression=lzma
           SolidCompression=yes
           WizardStyle=modern
@@ -73,11 +135,11 @@ jobs:
           Set-Content -Path installer.iss -Value $iss -Encoding UTF8
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
 
-      - name: Upload Windows installer
+      - name: Upload Windows installer artifact
         uses: actions/upload-artifact@v4
         with:
-          name: maoqiu-transfer-v0.2.1-windows-exe
-          path: dist/maoqiu-transfer-v0.2.1-windows-setup.exe
+          name: release-windows
+          path: dist/maoqiu-transfer-v*-windows-setup.exe
 
   macos:
     name: macOS DMG
@@ -85,6 +147,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Resolve version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -120,10 +185,36 @@ jobs:
             -srcfolder "$app_path" \
             -ov \
             -format UDZO \
-            "dist/maoqiu-transfer-v0.2.1-macos.dmg"
+            "dist/maoqiu-transfer-v${VERSION}-macos.dmg"
 
-      - name: Upload macOS DMG
+      - name: Upload macOS DMG artifact
         uses: actions/upload-artifact@v4
         with:
-          name: maoqiu-transfer-v0.2.1-macos-dmg
-          path: dist/maoqiu-transfer-v0.2.1-macos.dmg
+          name: release-macos
+          path: dist/maoqiu-transfer-v*-macos.dmg
+
+  release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    needs:
+      - android
+      - windows
+      - macos
+    steps:
+      - name: Download package artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: MaoQiu Transfer ${{ github.ref_name }}
+          body: |
+            - 修复 Android 扫码相机启动异常。
+            - 修复同一 Wi-Fi 下自动发现设备不稳定的问题。
+            - 快传热点流程改为扫码手机端开启热点，被扫码端自动连接后传输。
+            - 传输过程显示进度，完成或失败后显示提示。
+          files: release-assets/*

@@ -103,6 +103,10 @@ class AppController extends ChangeNotifier {
           _tcpServerService.hotspotJoinRequests.listen(_handleHotspotJoin),
         )
         ..add(
+          _tcpServerService.receiverHotspotReadyRequests
+              .listen(_handleReceiverHotspotReady),
+        )
+        ..add(
           _fileSenderService.taskEvents.listen(_upsertTask),
         );
 
@@ -128,7 +132,11 @@ class AppController extends ChangeNotifier {
     notifyListeners();
   }
 
-  String sendFiles(DeviceInfo peer, List<TransferFile> files) {
+  String sendFiles(
+    DeviceInfo peer,
+    List<TransferFile> files, {
+    List<String> peerIpCandidates = const [],
+  }) {
     final local = localDevice;
     if (local == null) {
       throw StateError('Local device is not ready.');
@@ -137,6 +145,7 @@ class AppController extends ChangeNotifier {
       localDevice: local,
       peer: peer,
       files: files,
+      peerIpCandidates: peerIpCandidates,
     );
   }
 
@@ -261,6 +270,10 @@ class AppController extends ChangeNotifier {
     _tasks[task.taskId] = task;
     if (task.taskId == activeHotspotTaskId && _isTerminal(task.status)) {
       unawaited(stopHotspotSession());
+      unawaited(_hotspotJoinService.cleanupTransientNetwork());
+    }
+    if (task.direction == TransferDirection.receive && _isTerminal(task.status)) {
+      unawaited(_hotspotJoinService.cleanupTransientNetwork());
     }
     notifyListeners();
   }
@@ -284,6 +297,55 @@ class AppController extends ChangeNotifier {
     notifyListeners();
   }
 
+  void _handleReceiverHotspotReady(ReceiverHotspotReadyRequest request) {
+    final session = activeHotspotSession;
+    if (session == null ||
+        session.isExpired ||
+        request.token != session.invite.token ||
+        !session.invite.usesReceiverHotspot ||
+        session.files.isEmpty ||
+        request.ssid.isEmpty) {
+      request.reject();
+      hotspotMessage = '收到无效或过期的扫码热点请求。';
+      notifyListeners();
+      return;
+    }
+
+    request.accept();
+    hotspotMessage = '${request.receiverDeviceName} 已开启热点，正在连接 ${request.ssid}。';
+    notifyListeners();
+    unawaited(_connectReceiverHotspotAndSend(request, session));
+  }
+
+  Future<void> _connectReceiverHotspotAndSend(
+    ReceiverHotspotReadyRequest request,
+    HotspotSession session,
+  ) async {
+    try {
+      await _hotspotJoinService.connectToWifi(
+        ssid: request.ssid,
+        password: request.password,
+      );
+      if (activeHotspotSession?.invite.token != session.invite.token) {
+        return;
+      }
+      await refreshLocalDevice();
+      final taskId = sendFiles(
+        request.toDeviceInfo(),
+        session.files,
+        peerIpCandidates: request.hostIpCandidates,
+      );
+      activeHotspotTaskId = taskId;
+      hotspotMessage = '已连接 ${request.ssid}，正在向 ${request.receiverDeviceName} 发送文件。';
+    } catch (error) {
+      if (activeHotspotSession?.invite.token != session.invite.token) {
+        return;
+      }
+      hotspotMessage = '连接手机热点失败：$error';
+    }
+    notifyListeners();
+  }
+
   bool _isTerminal(TransferStatus status) {
     return status == TransferStatus.completed ||
         status == TransferStatus.failed ||
@@ -300,6 +362,7 @@ class AppController extends ChangeNotifier {
     unawaited(_tcpServerService.dispose());
     unawaited(_fileSenderService.dispose());
     unawaited(_hotspotSessionService.stopSession(activeHotspotSession));
+    unawaited(_hotspotJoinService.cleanupTransientNetwork());
     _updateService.dispose();
     super.dispose();
   }

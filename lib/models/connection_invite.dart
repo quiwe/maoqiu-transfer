@@ -2,6 +2,22 @@ import 'dart:convert';
 
 import 'transfer_file.dart';
 
+enum HotspotOwner {
+  sender('sender'),
+  receiver('receiver');
+
+  const HotspotOwner(this.value);
+
+  final String value;
+
+  static HotspotOwner parse(String? value) {
+    return HotspotOwner.values.firstWhere(
+      (item) => item.value == value,
+      orElse: () => HotspotOwner.sender,
+    );
+  }
+}
+
 class HotspotInvite {
   const HotspotInvite({
     required this.ssid,
@@ -10,6 +26,7 @@ class HotspotInvite {
     required this.port,
     required this.token,
     required this.expireAt,
+    this.hotspotOwner = HotspotOwner.sender,
   });
 
   final String ssid;
@@ -18,12 +35,15 @@ class HotspotInvite {
   final int port;
   final String token;
   final DateTime expireAt;
+  final HotspotOwner hotspotOwner;
 
   bool get isExpired => DateTime.now().isAfter(expireAt);
+  bool get usesReceiverHotspot => hotspotOwner == HotspotOwner.receiver;
 
   Map<String, dynamic> toJson() {
     return {
       'mode': 'hotspot',
+      'hotspotOwner': hotspotOwner.value,
       'ssid': ssid,
       'password': password,
       'hostIp': hostIp,
@@ -49,6 +69,7 @@ class HotspotInvite {
       token: decoded['token'] as String? ?? '',
       expireAt: DateTime.tryParse(decoded['expireAt'] as String? ?? '') ??
           DateTime.fromMillisecondsSinceEpoch(0),
+      hotspotOwner: HotspotOwner.parse(decoded['hotspotOwner'] as String?),
     );
   }
 }

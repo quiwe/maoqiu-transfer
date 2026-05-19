@@ -91,6 +91,59 @@ class HotspotJoinRequest {
   }
 }
 
+class ReceiverHotspotReadyRequest {
+  ReceiverHotspotReadyRequest({
+    required this.token,
+    required this.receiverDeviceId,
+    required this.receiverDeviceName,
+    required this.receiverDeviceType,
+    required this.receiverPort,
+    required this.version,
+    required this.ssid,
+    required this.password,
+    required this.hostIp,
+    required this.hostIpCandidates,
+  });
+
+  final String token;
+  final String receiverDeviceId;
+  final String receiverDeviceName;
+  final String receiverDeviceType;
+  final int receiverPort;
+  final String version;
+  final String ssid;
+  final String password;
+  final String hostIp;
+  final List<String> hostIpCandidates;
+  final Completer<bool> _decision = Completer<bool>();
+
+  Future<bool> get decision => _decision.future;
+
+  DeviceInfo toDeviceInfo() {
+    return DeviceInfo(
+      deviceId: receiverDeviceId,
+      deviceName: receiverDeviceName,
+      deviceType: receiverDeviceType,
+      ip: hostIp,
+      port: receiverPort,
+      version: version,
+      lastSeen: DateTime.now(),
+    );
+  }
+
+  void accept() {
+    if (!_decision.isCompleted) {
+      _decision.complete(true);
+    }
+  }
+
+  void reject() {
+    if (!_decision.isCompleted) {
+      _decision.complete(false);
+    }
+  }
+}
+
 class TcpServerService {
   TcpServerService({
     required SettingsService settingsService,
@@ -108,6 +161,9 @@ class TcpServerService {
       StreamController<IncomingTransferRequest>.broadcast();
   final StreamController<HotspotJoinRequest> _hotspotJoinController =
       StreamController<HotspotJoinRequest>.broadcast();
+  final StreamController<ReceiverHotspotReadyRequest>
+      _receiverHotspotReadyController =
+      StreamController<ReceiverHotspotReadyRequest>.broadcast();
   final StreamController<TransferTask> _taskController =
       StreamController<TransferTask>.broadcast();
 
@@ -115,6 +171,8 @@ class TcpServerService {
       _requestController.stream;
   Stream<HotspotJoinRequest> get hotspotJoinRequests =>
       _hotspotJoinController.stream;
+  Stream<ReceiverHotspotReadyRequest> get receiverHotspotReadyRequests =>
+      _receiverHotspotReadyController.stream;
   Stream<TransferTask> get taskEvents => _taskController.stream;
 
   Future<void> start() async {
@@ -135,6 +193,7 @@ class TcpServerService {
     await stop();
     await _requestController.close();
     await _hotspotJoinController.close();
+    await _receiverHotspotReadyController.close();
     await _taskController.close();
   }
 
@@ -151,8 +210,15 @@ class TcpServerService {
         return;
       }
 
+      if (firstMessage['type'] == 'receiver_hotspot_ready') {
+        await _handleReceiverHotspotReady(socket, firstMessage);
+        return;
+      }
+
       if (firstMessage['type'] != 'transfer_request') {
-        throw const FormatException('Expected transfer_request or hotspot_join.');
+        throw const FormatException(
+          'Expected transfer_request, hotspot_join, or receiver_hotspot_ready.',
+        );
       }
 
       final request = IncomingTransferRequest(
@@ -217,6 +283,39 @@ class TcpServerService {
 
     await TransferProtocol.writeJson(socket, {
       'type': 'hotspot_join_ack',
+      'status': accepted ? 'accepted' : 'rejected',
+      if (!accepted) 'reason': 'invalid_or_expired_token',
+    });
+  }
+
+  Future<void> _handleReceiverHotspotReady(
+    Socket socket,
+    Map<String, dynamic> message,
+  ) async {
+    final request = ReceiverHotspotReadyRequest(
+      token: message['token'] as String? ?? '',
+      receiverDeviceId: message['receiverDeviceId'] as String? ?? '',
+      receiverDeviceName: message['receiverDeviceName'] as String? ?? 'Receiver',
+      receiverDeviceType: message['receiverDeviceType'] as String? ?? 'mobile',
+      receiverPort: (message['receiverPort'] as num?)?.toInt() ??
+          TransferProtocol.tcpPort,
+      version: message['version'] as String? ?? TransferProtocol.appVersion,
+      ssid: message['ssid'] as String? ?? '',
+      password: message['password'] as String? ?? '',
+      hostIp: message['hostIp'] as String? ?? '',
+      hostIpCandidates: (message['hostIpCandidates'] as List? ?? const [])
+          .whereType<String>()
+          .toList(),
+    );
+
+    _receiverHotspotReadyController.add(request);
+    final accepted = await request.decision.timeout(
+      const Duration(seconds: 15),
+      onTimeout: () => false,
+    );
+
+    await TransferProtocol.writeJson(socket, {
+      'type': 'receiver_hotspot_ack',
       'status': accepted ? 'accepted' : 'rejected',
       if (!accepted) 'reason': 'invalid_or_expired_token',
     });

@@ -29,12 +29,13 @@ class FileSenderService {
     required DeviceInfo localDevice,
     required DeviceInfo peer,
     required List<TransferFile> files,
+    List<String> peerIpCandidates = const [],
   }) {
     if (files.isEmpty) {
       throw ArgumentError('No files selected.');
     }
     final taskId = _uuid.v4();
-    unawaited(_sendFiles(taskId, localDevice, peer, files));
+    unawaited(_sendFiles(taskId, localDevice, peer, files, peerIpCandidates));
     return taskId;
   }
 
@@ -45,6 +46,7 @@ class FileSenderService {
     DeviceInfo localDevice,
     DeviceInfo peer,
     List<TransferFile> files,
+    List<String> peerIpCandidates,
   ) async {
     final createdAt = DateTime.now();
     var task = TransferTask(
@@ -89,11 +91,7 @@ class FileSenderService {
       );
       _emitTask(task);
 
-      final socket = await Socket.connect(
-        peer.ip,
-        peer.port,
-        timeout: const Duration(seconds: 8),
-      );
+      final socket = await _connectToPeer(peer, peerIpCandidates);
       final reader = SocketReader(socket);
       try {
         socket.setOption(SocketOption.tcpNoDelay, true);
@@ -207,6 +205,31 @@ class FileSenderService {
         ),
       ),
     );
+  }
+
+  Future<Socket> _connectToPeer(
+    DeviceInfo peer,
+    List<String> peerIpCandidates,
+  ) async {
+    final candidates = <String>{
+      if (peer.ip.trim().isNotEmpty) peer.ip.trim(),
+      ...peerIpCandidates.where((ip) => ip.trim().isNotEmpty).map((ip) => ip.trim()),
+    }.toList();
+
+    Object? lastError;
+    for (final ip in candidates) {
+      try {
+        return await Socket.connect(
+          ip,
+          peer.port,
+          timeout: const Duration(seconds: 8),
+        );
+      } catch (error) {
+        lastError = error;
+      }
+    }
+
+    throw StateError('无法连接 ${peer.deviceName}：$lastError');
   }
 
   void _emitTask(TransferTask task) {

@@ -9,7 +9,7 @@
 - 文件接收：先写入 `.part` 临时文件，SHA-256 校验成功后再改为正式文件名。
 - 保存目录：默认 `Downloads/MaoQiuTransfer`，支持在设置页修改。
 - 手动 IP：发现失败时可以输入对方 IP 和端口继续发送。
-- 一键快传：生成临时传输热点邀请二维码，接收端加入网络后通知发送端发起传输。
+- 一键快传：发送端生成邀请二维码；扫码手机端开启临时热点，发送端自动连接手机热点后发起传输。
 - 检查更新：启动后自动查询 GitHub Releases，并按当前平台下载 `.apk` / `.exe` / `.dmg`。
 
 ## 当前仓库状态
@@ -36,13 +36,14 @@ Android 端生成平台目录后，需要确认 `android/app/src/main/AndroidMan
 <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
 ```
 
-仓库里的 `tool/patch_android_platform.sh` 会在生成 Android 平台目录后自动补齐这些权限、APK 应用名和 `LocalOnlyHotspot` 原生通道。GitHub Actions 在线打包也会执行这个脚本。
+仓库里的 `tool/patch_android_platform.sh` 会在生成 Android 平台目录后自动补齐这些权限、APK 应用名、UDP 发现所需的 `MulticastLock` 和 `LocalOnlyHotspot` 原生通道。GitHub Actions 在线打包也会执行这个脚本。
 
 ## 连接模式
 
 ### 同一 WiFi 自动发现
 
 两台设备都打开客户端后，通过 UDP 广播自动出现在首页“附近设备”列表中。点击设备后选择文件发送。
+Android 端会在应用运行期间获取 Wi-Fi 组播锁，避免系统过滤同网 UDP 发现包。发现到设备时优先使用 UDP 包的来源 IP，避免 VPN 或虚拟网卡自报 IP 导致连接失败。
 
 ### 手动 IP
 
@@ -55,16 +56,17 @@ Android 端生成平台目录后，需要确认 `android/app/src/main/AndroidMan
 ```json
 {
   "mode": "hotspot",
-  "ssid": "MaoQiu-Transfer-A8F2",
-  "password": "mq-8392-1947",
-  "hostIp": "192.168.43.1",
+  "hotspotOwner": "receiver",
+  "ssid": "",
+  "password": "",
+  "hostIp": "192.168.1.23",
   "port": 9527,
   "token": "temporary-token",
   "expireAt": "datetime"
 }
 ```
 
-接收端点击“扫码接收”，可以调用相机扫描二维码。Android 端会通过系统 Wi-Fi 连接请求尝试加入二维码中的热点；系统可能弹出确认窗口。加入后接收端通知发送端，发送端校验 token 成功后，使用现有 TCP 传输协议向接收端发起传输请求，接收端仍需手动确认。
+接收端点击“扫码接收”，可以调用相机扫描二维码。Android 手机端扫码后会创建仅本地通信的临时热点，并把系统返回的真实热点名称、密码和手机热点地址通知发送端。发送端校验 token 成功后自动连接手机热点，并使用现有 TCP 传输协议向接收端发起传输请求，接收端仍需手动确认。
 
 当前仓库已经实现 Dart 侧邀请、token 校验、二维码显示、相机扫码、系统 Wi-Fi 加入请求和热点加入握手。Android `LocalOnlyHotspot` 通过平台通道接入：
 
@@ -77,7 +79,7 @@ connectToWifi({ ssid, password })
 releaseWifiNetwork()
 ```
 
-Android 会使用系统 `LocalOnlyHotspot` 创建本地热点，并把系统返回的真实热点名称和密码写入二维码。
+Android 扫码端会使用系统 `LocalOnlyHotspot` 创建本地热点；桌面端会按系统调用自动连接该热点（Windows 使用 `netsh`，macOS 使用 `networksetup`，Linux 使用 `nmcli`）。
 
 ## 检查更新
 
@@ -116,7 +118,7 @@ flutter analyze
 flutter build apk --release
 ```
 
-构建成功后，APK 会作为 artifact 上传，名称为 `maoqiu-transfer-v0.2.0-android-apk`。
+构建成功后，APK 会作为 artifact 上传，名称为 `maoqiu-transfer-v0.2.1-android-apk`。
 
 ## 第一版验收
 

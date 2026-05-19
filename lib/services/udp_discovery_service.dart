@@ -2,15 +2,22 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/services.dart';
+
 import '../models/device_info.dart';
 import 'protocol.dart';
 
 class UdpDiscoveryService {
+  UdpDiscoveryService({DiscoveryPlatformService? platformService})
+      : _platformService = platformService ?? DiscoveryPlatformService();
+
+  final DiscoveryPlatformService _platformService;
   RawDatagramSocket? _socket;
   Timer? _broadcastTimer;
   Timer? _pruneTimer;
   StreamSubscription<RawSocketEvent>? _subscription;
   DeviceInfo? _localDevice;
+  bool _multicastLockActive = false;
 
   final Map<String, DeviceInfo> _devices = {};
   final StreamController<List<DeviceInfo>> _devicesController =
@@ -20,11 +27,17 @@ class UdpDiscoveryService {
 
   Future<void> start(DeviceInfo localDevice) async {
     _localDevice = localDevice;
-    _socket = await RawDatagramSocket.bind(
-      InternetAddress.anyIPv4,
-      TransferProtocol.udpPort,
-      reuseAddress: true,
-    );
+    await _acquireAndroidMulticastLock();
+    try {
+      _socket = await RawDatagramSocket.bind(
+        InternetAddress.anyIPv4,
+        TransferProtocol.udpPort,
+        reuseAddress: true,
+      );
+    } catch (_) {
+      await _releaseAndroidMulticastLock();
+      rethrow;
+    }
     _socket?.broadcastEnabled = true;
     _subscription = _socket?.listen(_handleSocketEvent);
 
@@ -50,6 +63,7 @@ class UdpDiscoveryService {
     await _subscription?.cancel();
     _socket?.close();
     _socket = null;
+    await _releaseAndroidMulticastLock();
     _devices.clear();
     _emitDevices();
   }
@@ -67,11 +81,13 @@ class UdpDiscoveryService {
     }
 
     final payload = utf8.encode(jsonEncode(localDevice.toAnnounceJson()));
-    socket.send(
-      payload,
-      InternetAddress('255.255.255.255'),
-      TransferProtocol.udpPort,
-    );
+    for (final target in _broadcastTargets(localDevice.ip)) {
+      try {
+        socket.send(payload, target, TransferProtocol.udpPort);
+      } catch (_) {
+        continue;
+      }
+    }
   }
 
   void _handleSocketEvent(RawSocketEvent event) {
@@ -122,5 +138,54 @@ class UdpDiscoveryService {
     if (!_devicesController.isClosed) {
       _devicesController.add(list);
     }
+  }
+
+  List<InternetAddress> _broadcastTargets(String localIp) {
+    final targets = <String>{'255.255.255.255'};
+    final parts = localIp.split('.');
+    if (parts.length == 4 && parts.every((part) => int.tryParse(part) != null)) {
+      targets.add('${parts[0]}.${parts[1]}.${parts[2]}.255');
+    }
+    return targets.map((target) => InternetAddress(target)).toList();
+  }
+
+  Future<void> _acquireAndroidMulticastLock() async {
+    if (!Platform.isAndroid || _multicastLockActive) {
+      return;
+    }
+    try {
+      await _platformService.acquireMulticastLock();
+      _multicastLockActive = true;
+    } on MissingPluginException {
+      return;
+    } catch (_) {
+      return;
+    }
+  }
+
+  Future<void> _releaseAndroidMulticastLock() async {
+    if (!Platform.isAndroid || !_multicastLockActive) {
+      return;
+    }
+    _multicastLockActive = false;
+    try {
+      await _platformService.releaseMulticastLock();
+    } on MissingPluginException {
+      return;
+    } catch (_) {
+      return;
+    }
+  }
+}
+
+class DiscoveryPlatformService {
+  static const MethodChannel _channel = MethodChannel('maoqiu_transfer/hotspot');
+
+  Future<void> acquireMulticastLock() async {
+    await _channel.invokeMethod<void>('acquireMulticastLock');
+  }
+
+  Future<void> releaseMulticastLock() async {
+    await _channel.invokeMethod<void>('releaseMulticastLock');
   }
 }

@@ -5,7 +5,9 @@ import 'package:qr_flutter/qr_flutter.dart';
 import '../app.dart';
 import '../models/connection_invite.dart';
 import '../models/transfer_file.dart';
+import '../models/transfer_task.dart';
 import '../utils/formatters.dart';
+import '../widgets/transfer_progress_card.dart';
 
 class QuickTransferPage extends StatefulWidget {
   const QuickTransferPage({super.key});
@@ -28,6 +30,7 @@ class _QuickTransferPageState extends State<QuickTransferPage> {
         animation: controller,
         builder: (context, _) {
           final session = controller.activeHotspotSession;
+          final task = _activeTask(controller);
           return ListView(
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
             children: [
@@ -68,6 +71,7 @@ class _QuickTransferPageState extends State<QuickTransferPage> {
                 _SessionPanel(
                   session: session,
                   message: controller.hotspotMessage,
+                  task: task,
                   onStop: controller.stopHotspotSession,
                 ),
               if (_error != null) ...[
@@ -86,6 +90,14 @@ class _QuickTransferPageState extends State<QuickTransferPage> {
 
   Iterable<TransferFile> _visibleFiles(HotspotSession? session) {
     return session?.files ?? _files;
+  }
+
+  TransferTask? _activeTask(AppController controller) {
+    final taskId = controller.activeHotspotTaskId;
+    if (taskId == null) {
+      return null;
+    }
+    return controller.taskById(taskId);
   }
 
   Future<void> _pickFiles() async {
@@ -139,11 +151,13 @@ class _SessionPanel extends StatelessWidget {
   const _SessionPanel({
     required this.session,
     required this.message,
+    required this.task,
     required this.onStop,
   });
 
   final HotspotSession session;
   final String? message;
+  final TransferTask? task;
   final Future<void> Function() onStop;
 
   @override
@@ -169,16 +183,16 @@ class _SessionPanel extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 12),
-            _Line(label: 'WiFi', value: session.invite.ssid),
-            _Line(label: '密码', value: session.invite.password),
-            _Line(
-              label: '主机',
-              value: '${session.invite.hostIp}:${session.invite.port}',
-            ),
+            const _Line(label: '方式', value: '手机扫码后开启热点'),
+            _Line(label: '本机', value: '${session.invite.hostIp}:${session.invite.port}'),
             _Line(label: '有效期', value: session.invite.expireAt.toLocal().toString()),
             if (message != null && message!.isNotEmpty) ...[
               const SizedBox(height: 8),
               Text(message!),
+            ],
+            if (task != null) ...[
+              const SizedBox(height: 12),
+              TransferProgressCard(task: task!),
             ],
             const SizedBox(height: 12),
             ExpansionTile(

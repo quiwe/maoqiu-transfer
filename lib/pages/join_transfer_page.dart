@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -17,12 +18,15 @@ class JoinTransferPage extends StatefulWidget {
 class _JoinTransferPageState extends State<JoinTransferPage> {
   final _payloadController = TextEditingController();
   final MobileScannerController _scannerController = MobileScannerController(
+    autoStart: false,
     detectionSpeed: DetectionSpeed.noDuplicates,
+    formats: const [BarcodeFormat.qrCode],
   );
   HotspotInvite? _invite;
   String? _error;
   bool _joining = false;
   bool _scanning = false;
+  bool _startingScanner = false;
   bool _handledScan = false;
   bool get _supportsCameraScan => Platform.isAndroid;
 
@@ -53,8 +57,9 @@ class _JoinTransferPageState extends State<JoinTransferPage> {
           if (_supportsCameraScan) ...[
             FilledButton.icon(
               icon: const Icon(Icons.photo_camera_outlined),
-              label: Text(_scanning ? '正在扫描' : '打开相机扫码'),
-              onPressed: _scanning ? null : _startScanner,
+              label: Text(_scannerButtonLabel),
+              onPressed:
+                  _scanning || _startingScanner ? null : _startScanner,
             ),
             const SizedBox(height: 14),
           ],
@@ -87,7 +92,7 @@ class _JoinTransferPageState extends State<JoinTransferPage> {
             const SizedBox(height: 16),
             FilledButton.icon(
               icon: const Icon(Icons.wifi),
-              label: Text(_joining ? '正在连接并通知发送端' : '连接热点并继续'),
+              label: Text(_joining ? '正在准备' : _joinButtonLabel),
               onPressed: _joining ? null : _join,
             ),
           ],
@@ -96,25 +101,96 @@ class _JoinTransferPageState extends State<JoinTransferPage> {
     );
   }
 
+  String get _scannerButtonLabel {
+    if (_startingScanner) {
+      return '正在打开相机';
+    }
+    if (_scanning) {
+      return '正在扫描';
+    }
+    return '打开相机扫码';
+  }
+
+  String get _joinButtonLabel {
+    final invite = _invite;
+    if (invite?.usesReceiverHotspot == true) {
+      return '开启手机热点并接收';
+    }
+    return '连接热点并继续';
+  }
+
   Future<void> _startScanner() async {
-    final status = await Permission.camera.request();
-    if (!status.isGranted) {
-      setState(() => _error = '需要相机权限才能扫码。');
+    if (_startingScanner || _scanning) {
       return;
     }
 
     setState(() {
       _error = null;
+      _startingScanner = true;
+    });
+
+    final status = await Permission.camera.request();
+    if (!mounted) {
+      return;
+    }
+
+    if (!status.isGranted) {
+      setState(() {
+        _error = '需要相机权限才能扫码。';
+        _startingScanner = false;
+      });
+      return;
+    }
+
+    setState(() {
       _handledScan = false;
       _scanning = true;
     });
-    await _scannerController.start();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(_startScannerAfterLayout());
+    });
+  }
+
+  Future<void> _startScannerAfterLayout() async {
+    if (!mounted || !_scanning) {
+      return;
+    }
+
+    try {
+      await _scannerController.start();
+      if (!mounted) {
+        return;
+      }
+      if (!_scanning) {
+        await _stopScanner();
+        return;
+      }
+      setState(() => _startingScanner = false);
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _error = '相机启动失败：$error';
+        _scanning = false;
+        _startingScanner = false;
+      });
+    }
   }
 
   Future<void> _stopScanner() async {
-    await _scannerController.stop();
-    if (mounted) {
-      setState(() => _scanning = false);
+    try {
+      await _scannerController.stop();
+    } catch (_) {
+      // Stopping is best-effort because the Android camera may still be
+      // completing a previous start request.
+    } finally {
+      if (mounted) {
+        setState(() {
+          _scanning = false;
+          _startingScanner = false;
+        });
+      }
     }
   }
 
@@ -169,7 +245,7 @@ class _JoinTransferPageState extends State<JoinTransferPage> {
         return;
       }
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('已通知发送端，请确认接收请求')),
+        SnackBar(content: Text(_joinSuccessMessage(invite))),
       );
       Navigator.of(context).pop();
     } catch (error) {
@@ -181,6 +257,13 @@ class _JoinTransferPageState extends State<JoinTransferPage> {
         _error = error.toString();
       });
     }
+  }
+
+  String _joinSuccessMessage(HotspotInvite invite) {
+    if (invite.usesReceiverHotspot) {
+      return '手机热点已开启，等待发送端连接并传输文件';
+    }
+    return '已通知发送端，请确认接收请求';
   }
 }
 
@@ -251,9 +334,13 @@ class _InvitePanel extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            _Line(label: 'WiFi', value: invite.ssid),
-            _Line(label: '密码', value: invite.password),
-            _Line(label: '主机', value: '${invite.hostIp}:${invite.port}'),
+            if (invite.usesReceiverHotspot)
+              const _Line(label: '方式', value: '本机开启手机热点')
+            else ...[
+              _Line(label: 'WiFi', value: invite.ssid),
+              _Line(label: '密码', value: invite.password),
+            ],
+            _Line(label: '发送端', value: '${invite.hostIp}:${invite.port}'),
             _Line(label: '有效期', value: invite.expireAt.toLocal().toString()),
           ],
         ),

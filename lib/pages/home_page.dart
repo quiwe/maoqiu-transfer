@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../app.dart';
 import '../models/app_update.dart';
 import '../models/device_info.dart';
+import '../models/transfer_task.dart';
 import '../services/app_controller.dart';
 import '../services/app_info.dart';
 import '../services/tcp_server_service.dart';
@@ -31,6 +32,7 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   AppController? _controller;
   StreamSubscription<IncomingTransferRequest>? _incomingSubscription;
+  final Set<String> _notifiedTerminalTasks = {};
   Future<void> _dialogQueue = Future.value();
 
   @override
@@ -42,7 +44,9 @@ class _HomePageState extends State<HomePage> {
     }
 
     _incomingSubscription?.cancel();
+    _controller?.removeListener(_handleControllerChanged);
     _controller = controller;
+    controller.addListener(_handleControllerChanged);
     _incomingSubscription = controller.incomingRequests.listen((request) {
       _dialogQueue = _dialogQueue.then((_) => _showReceiveDialog(request));
     });
@@ -51,6 +55,7 @@ class _HomePageState extends State<HomePage> {
   @override
   void dispose() {
     _incomingSubscription?.cancel();
+    _controller?.removeListener(_handleControllerChanged);
     super.dispose();
   }
 
@@ -119,6 +124,57 @@ class _HomePageState extends State<HomePage> {
       request.accept();
     } else {
       request.reject();
+    }
+  }
+
+  void _handleControllerChanged() {
+    if (!mounted) {
+      return;
+    }
+    final controller = _controller;
+    if (controller == null) {
+      return;
+    }
+
+    for (final task in controller.transfers) {
+      if (!_isTerminal(task.status) ||
+          _notifiedTerminalTasks.contains(task.taskId)) {
+        continue;
+      }
+      _notifiedTerminalTasks.add(task.taskId);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) {
+          return;
+        }
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(_taskNotice(task))),
+        );
+      });
+    }
+  }
+
+  bool _isTerminal(TransferStatus status) {
+    return status == TransferStatus.completed ||
+        status == TransferStatus.failed ||
+        status == TransferStatus.rejected ||
+        status == TransferStatus.cancelled;
+  }
+
+  String _taskNotice(TransferTask task) {
+    final action = task.direction == TransferDirection.send ? '发送' : '接收';
+    switch (task.status) {
+      case TransferStatus.completed:
+        return '$action完成：${task.files.length} 个文件';
+      case TransferStatus.failed:
+        return '$action失败：${task.errorMessage ?? '请重试'}';
+      case TransferStatus.rejected:
+        return '$action被拒绝';
+      case TransferStatus.cancelled:
+        return '$action已取消';
+      case TransferStatus.pending:
+      case TransferStatus.waitingAccept:
+      case TransferStatus.transferring:
+        return '';
     }
   }
 }

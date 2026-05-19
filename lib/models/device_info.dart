@@ -65,9 +65,9 @@ class DeviceInfo {
       deviceId: json['deviceId'] as String,
       deviceName: json['deviceName'] as String? ?? 'Unknown Device',
       deviceType: json['deviceType'] as String? ?? 'desktop',
-      ip: json['ip'] as String? ?? fallbackIp ?? '',
+      ip: fallbackIp ?? (json['ip'] as String? ?? ''),
       port: (json['port'] as num?)?.toInt() ?? 9527,
-      version: json['version'] as String? ?? '0.2.0',
+      version: json['version'] as String? ?? '0.2.1',
       lastSeen: DateTime.now(),
     );
   }
